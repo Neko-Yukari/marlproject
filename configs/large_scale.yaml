@@ -1,0 +1,86 @@
+# MARL Edge Offloading — Stage 3 Large-Scale Configuration
+# GNN Communication + Parameter Sharing + Curriculum Learning
+
+environment:
+  num_devices: 50            # Maximum scale
+  num_servers: 8
+  max_slots: 200
+  device_cpu: 1.0e9
+  server_cpu: 7.0e9
+  energy_budget: 100.0
+  tx_power: 0.1
+  bandwidth: 10.0e6
+  noise_power: 1.0e-11
+  energy_coeff: 1.0e-28
+  cost_weight: 0.5
+
+marl:
+  algorithm: "GNN-MARL"
+  total_episodes: 2500        # Cumulative across curriculum phases
+  episode_length: 200
+  num_agents: 50              # Final scale
+
+algorithm:
+  type: "GNN-IPPO"
+  hidden_dim: 128
+  num_layers: 2
+  learning_rate: 5.0e-5
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_ratio: 0.2
+  entropy_coeff: 0.01
+  value_coeff: 0.5
+  max_grad_norm: 0.5
+  batch_size: 32              # Smaller for large-scale
+  num_epochs: 2               # Fewer epochs for speed
+
+# --- GNN Communication ---
+gnn:
+  enable: true
+  type: "GAT"
+  num_heads: 4
+  top_k: 5                    # Communicate with top-5 neighbors
+  adjacency_sigma: 100.0      # Gaussian kernel σ for distance
+  adjacency_threshold: 0.1    # Edge pruning threshold
+  message_dim: 64
+
+# --- Curriculum Learning ---
+curriculum:
+  phases:
+    - devices: 5
+      episodes: 1000
+      inherit_weights: false
+    - devices: 10
+      episodes: 500
+      inherit_weights: true
+      freeze_gnn: true
+    - devices: 20
+      episodes: 500
+      inherit_weights: true
+      freeze_gnn: true
+    - devices: 50
+      episodes: 500
+      inherit_weights: true
+      freeze_gnn: true
+
+# --- Fairness ---
+fairness:
+  enable_lagrangian: true
+  fairness_threshold: 0.8     # Jain index target
+  lagrangian_lr: 0.01
+
+reward:
+  cost_weight: 0.5
+  deadline_penalty: 10.0
+  energy_penalty: 10.0
+
+evaluation:
+  eval_episodes: 10
+  save_interval: 200
+
+logging:
+  log_dir: "./logs"
+  tensorboard_dir: "./runs"
+  checkpoint_dir: "./checkpoints"
+
+seed: 42

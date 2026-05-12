@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project-specific
+results/
+logs/
+checkpoints/
+runs/
+
+# Build artifacts
+generate_manual.py
+qa_verify.py
+
+# Large papers (keep only PDFs we need)
+papers/ExplabOff_Towards_Explorative_and_Collaborative_Task_Offloading_via_Mutual_Information-Enhanced_MARL/
