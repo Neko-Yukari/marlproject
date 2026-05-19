@@ -68,13 +68,19 @@ class ExplabOffAgent:
 
     # ── MI-enhanced reward ──
     def compute_mi_reward(self, state: np.ndarray, action: int) -> float:
-        with torch.no_grad():
-            s = torch.from_numpy(state).float().unsqueeze(0).to(self.device)
-            a_onehot = torch.zeros(1, self.action_dim).to(self.device)
-            a_onehot[0, action] = 1.0
-            i_nce = self.info_nce(s, a_onehot).item()
-            i_l1  = self.l1_out(s, a_onehot).item()
-            return self.mi_mu * i_nce - self.mi_nu * i_l1
+        try:
+            with torch.no_grad():
+                s = torch.from_numpy(state).float().unsqueeze(0).to(self.device)
+                a_onehot = torch.zeros(1, self.action_dim).to(self.device)
+                a_onehot[0, action] = 1.0
+                i_nce = self.info_nce(s, a_onehot)
+                i_l1  = self.l1_out(s, a_onehot)
+                mi = self.mi_mu * i_nce - self.mi_nu * i_l1
+                if torch.isnan(mi) or torch.isinf(mi):
+                    return 0.0
+                return float(mi.item()) * 0.01
+        except Exception:
+            return 0.0
 
     # ── Dual buffers ──
     def classify_episode(self, ep_reward: float, max_buf: int = 1000):
@@ -144,6 +150,8 @@ class ExplabOffAgent:
             for i in range(0, n, batch_size):
                 idx = perm[i:i+batch_size]
                 probs, values = self.network(s_t[idx])
+                probs = torch.clamp(probs, 1e-8, 1.0)
+                probs = probs / probs.sum(-1, keepdim=True)
                 dist = torch.distributions.Categorical(probs)
                 new_lp  = dist.log_prob(a_t[idx])
                 entropy = dist.entropy().mean()
