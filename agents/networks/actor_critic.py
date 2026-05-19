@@ -1,40 +1,22 @@
 """
-Actor-Critic network architecture for PPO-based MARL.
-
-Standard MLP backbone shared between actor (policy head)
-and critic (value head). Used by IPPO, MAPPO, and ExplabOff agents.
+Actor-Critic network architecture for PPO-based MARL edge offloading.
 """
-
 import torch
 import torch.nn as nn
-from typing import Tuple, Dict
+from typing import Tuple
 
 
 class ActorCriticNetwork(nn.Module):
     """
-    Shared-backbone Actor-Critic network.
-
-    Architecture:
-        Input (state_dim) → Hidden layers → Actor head (action_dim) + Critic head (1)
+    Shared-backbone Actor-Critic with separate policy and value heads.
 
     Outputs:
-        - Action probabilities (softmax over discrete action space)
-        - State value estimate (scalar)
+        - action_probs [batch, action_dim] via softmax
+        - value [batch, 1]
     """
 
-    def __init__(
-        self,
-        state_dim: int,
-        action_dim: int,
-        hidden_dim: int = 128,
-        num_layers: int = 2,
-    ):
+    def __init__(self, state_dim: int, action_dim: int, hidden_dim: int = 128, num_layers: int = 2):
         super().__init__()
-        self.state_dim = state_dim
-        self.action_dim = action_dim
-        self.hidden_dim = hidden_dim
-
-        # --- TO IMPLEMENT: Shared backbone ---
         layers = []
         layers.append(nn.Linear(state_dim, hidden_dim))
         layers.append(nn.ReLU())
@@ -42,46 +24,12 @@ class ActorCriticNetwork(nn.Module):
             layers.append(nn.Linear(hidden_dim, hidden_dim))
             layers.append(nn.ReLU())
         self.backbone = nn.Sequential(*layers)
+        self.actor_head = nn.Linear(hidden_dim, action_dim)
+        self.critic_head = nn.Linear(hidden_dim, 1)
 
-        # --- TO IMPLEMENT: Actor head (policy) ---
-        self.actor_head: nn.Module = None  # Linear(hidden_dim, action_dim) + Softmax
-
-        # --- TO IMPLEMENT: Critic head (value) ---
-        self.critic_head: nn.Module = None  # Linear(hidden_dim, 1)
-
-    def forward(
-        self, state: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Forward pass.
-
-        Args:
-            state: [batch_size, state_dim]
-
-        Returns:
-            (action_probs [batch_size, action_dim], value [batch_size, 1])
-
-        --- TO IMPLEMENT ---
-        """
-        raise NotImplementedError("ActorCriticNetwork.forward not implemented")
-
-
-class ContinuousActorCriticNetwork(nn.Module):
-    """
-    Actor-Critic for continuous/partially-continuous action spaces.
-
-    For Stage 3 mixed action: discrete (target ES) + continuous (offload ratio).
-    """
-
-    def __init__(
-        self,
-        state_dim: int,
-        es_count: int,
-        hidden_dim: int = 128,
-    ):
-        super().__init__()
-        # --- TO IMPLEMENT: Separate heads for discrete and continuous actions ---
-        pass
-
-    def forward(self, state: torch.Tensor):
-        raise NotImplementedError
+    def forward(self, state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        features = self.backbone(state)
+        logits = self.actor_head(features)
+        action_probs = torch.softmax(logits, dim=-1)
+        value = self.critic_head(features)
+        return action_probs, value
