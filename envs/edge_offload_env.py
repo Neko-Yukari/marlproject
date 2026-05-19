@@ -235,8 +235,7 @@ class EdgeOffloadEnv(ParallelEnv):
 
         # ── Phase 3: Edge computation ──
         for agent_id, es_idx, offload_data, task in offload_requests:
-            rate = tx_rates.get((agent_id, es_idx), 1e8)
-            t_tx = calculate_transmission_energy(offload_data, 1.0, rate)  # dummy, just rate check
+            rate = max(tx_rates.get((agent_id, es_idx), 1e8), 1e4)  # rate floor: 10 kbps
             # Edge latency: transmission + queuing + compute
             es = self.es_devices[es_idx]
             t_edge = calculate_edge_latency(
@@ -289,7 +288,9 @@ class EdgeOffloadEnv(ParallelEnv):
             self.episode_metrics["total_latency"] += task.latency
 
             # ── Compute per-agent reward ──
-            cost = self.cost_weight * task.latency + (1 - self.cost_weight) * task.energy_consumed
+            # Cap latency to task's max_latency (paper constraint Eq.10)
+            capped_latency = min(task.latency, task.max_latency)
+            cost = self.cost_weight * capped_latency + (1 - self.cost_weight) * task.energy_consumed
             energy_penalty = 10.0 if md.current_energy < 0 else 0.0
             deadline_penalty = 10.0 if not task.deadline_met else 0.0
             rewards[agent_id] = float(-cost - energy_penalty - deadline_penalty)
@@ -330,12 +331,12 @@ class EdgeOffloadEnv(ParallelEnv):
     # ── Internal Methods ───────────────────────────────────────────
 
     def _generate_task(self) -> Task:
-        """Generate a random task for an MD."""
+        """Generate a task matching paper Fig.1: 2-7e9 CPU cycles per task."""
         task = create_task(
             task_id=self.task_counter,
-            data_range=(1e5, 1e6),       # 0.1-1 Mbits
-            cpu_per_bit=1000.0,           # typical video task
-            latency_range=(0.1, 0.5),     # 100-500 ms
+            data_range=(2e6, 7e6),
+            cpu_per_bit=1000.0,
+            latency_range=(0.5, 2.0),
         )
         self.task_counter += 1
         return task

@@ -1,4 +1,4 @@
-"""Stage 1 vs Stage 2 comparison training (quick)."""
+"""Stage 1 vs Stage 2 comparison (paper-matched parameters)."""
 import sys; sys.path.insert(0, '.')
 import numpy as np
 import json
@@ -7,9 +7,9 @@ from envs.edge_offload_env import EdgeOffloadEnv
 from agents import IPPOAgent
 from agents.explaboff_agent import ExplabOffAgent
 
-EPISODES = 50
-EP_LENGTH = 20
-M, E = 3, 2  # small scale for quick test
+EPISODES = 200
+EP_LENGTH = 50
+M, E = 3, 2
 
 def discrete_to_dict(action, E):
     if action == 0:
@@ -17,7 +17,8 @@ def discrete_to_dict(action, E):
     return {"offload_ratio": np.array([1.0], dtype=np.float32), "target_es": min(action, E)}
 
 def run_algorithm(name, agent_cls, episodes, **kwargs):
-    env = EdgeOffloadEnv(num_devices=M, num_servers=E, max_slots=EP_LENGTH)
+    env = EdgeOffloadEnv(num_devices=M, num_servers=E, max_slots=EP_LENGTH,
+                         device_cpu=3e9, server_cpu=10e9, energy_budget=500.0)
     obs_dim = env.observation_spaces['device_0'].shape[0]
     act_dim = E + 1
     agents = [agent_cls(agent_id=i, state_dim=obs_dim, action_dim=act_dim, **kwargs) for i in range(M)]
@@ -31,6 +32,7 @@ def run_algorithm(name, agent_cls, episodes, **kwargs):
     for ep in range(episodes):
         obs, _ = env.reset()
         ep_metrics = {'episode': ep, 'total_reward': 0.0, 'steps': 0}
+        rewards_list = []
         for step in range(EP_LENGTH):
             agent_data = {}
             actions = {}
@@ -39,15 +41,16 @@ def run_algorithm(name, agent_cls, episodes, **kwargs):
                 act, logp, val = agent.select_action(obs[a_id])
                 agent_data[a_id] = (act, logp, val)
                 actions[a_id] = discrete_to_dict(act, E)
-
             next_obs, rewards, terms, truncs, _ = env.step(actions)
             for i, agent in enumerate(agents):
                 a_id = f"device_{i}"
                 act, logp, val = agent_data[a_id]
-                r = rewards[a_id]
-                if name == 'ExplabOff':
-                    r += agent.compute_mi_reward(obs[a_id], act)
+                r = float(np.clip(rewards[a_id], -100, 0))  # clip extreme rewards
+                if name == 'ExplabOff' and ep > 10:  # warmup before MI
+                    mi_bonus = agent.compute_mi_reward(obs[a_id], act)
+                    r += mi_bonus
                 agent.store_transition(obs[a_id], act, r, val, logp, terms[a_id])
+                rewards_list.append(rewards[a_id])
             obs = next_obs
             ep_metrics['total_reward'] += sum(rewards.values())
             ep_metrics['steps'] += 1
@@ -58,24 +61,28 @@ def run_algorithm(name, agent_cls, episodes, **kwargs):
             agent.clear_trajectory()
 
         if name == 'ExplabOff':
+            ep_r = np.mean(rewards_list) if rewards_list else 0.0
             for agent in agents:
-                agent.classify_episode(ep_metrics['total_reward'])
+                agent.classify_episode(float(ep_r))
+            # Periodic MI estimator update (every 5 episodes per paper)
+            if ep % 5 == 0:
+                for agent in agents:
+                    agent.update_mi_estimators()
 
         m = env.get_episode_metrics()
         ep_metrics.update(m)
         history.append(ep_metrics)
-        if ep % 10 == 0:
+        if ep % 20 == 0:
             print(f"  {name} ep {ep}: reward={ep_metrics['total_reward']:.1f}, completion={m['completion_rate']:.2%}")
 
-    # Final summary
-    last10 = history[-10:]
+    last20 = history[-20:]
     summary = {
         'algorithm': name,
         'episodes': episodes,
-        'final_completion_rate': float(np.mean([h['completion_rate'] for h in last10])),
-        'final_avg_latency': float(np.mean([h['avg_latency'] for h in last10])),
-        'final_avg_energy': float(np.mean([h['avg_energy'] for h in last10])),
-        'final_avg_reward': float(np.mean([h['total_reward'] for h in last10])),
+        'final_completion_rate': float(np.mean([h['completion_rate'] for h in last20])),
+        'final_avg_latency': float(np.mean([h['avg_latency'] for h in last20])),
+        'final_avg_energy': float(np.mean([h['avg_energy'] for h in last20])),
+        'final_avg_reward': float(np.mean([h['total_reward'] for h in last20])),
     }
     return summary, history
 
