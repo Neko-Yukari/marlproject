@@ -17,7 +17,7 @@ def discrete_to_dict(action, E):
 def run_experiment(name, agent_cls, M, E, episodes, ep_length, **kwargs):
     """Single experiment run."""
     t0 = time.time()
-    device = torch.device('cpu')
+    device = torch.device('cuda')
     env = EdgeOffloadEnv(num_devices=M, num_servers=E, max_slots=ep_length,
                          device_cpu=3e9, server_cpu=10e9, energy_budget=500.0)
     obs_dim = env.observation_spaces['device_0'].shape[0]
