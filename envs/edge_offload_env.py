@@ -81,11 +81,11 @@ class EdgeOffloadEnv(ParallelEnv):
                     'arrival': self.current_slot, 'edge_energy': 0.0
                 }
 
-        # ── Phase 2: Apply offloading decisions for newly submitted tasks ──
+        # ── Phase 2: Apply offloading decisions for NEWLY submitted tasks ──
         offload_requests = []
         for agent_id in self.agents:
             tdata = self.md_tasks[agent_id]
-            if tdata['target_es'] is not None: continue  # already submitted
+            if tdata.get('decided'): continue  # already decided, skip
 
             action = actions.get(agent_id, {"offload_ratio": [0.0], "target_es": 0})
             rho = float(np.clip(np.asarray(action.get("offload_ratio", [0.0])).item(), 0.0, 1.0))
@@ -103,6 +103,7 @@ class EdgeOffloadEnv(ParallelEnv):
                 tdata['target_es'] = None
                 tdata['rem_local'] = tdata['task'].total_cpu_cycles
                 tdata['rem_edge'] = 0.0
+            tdata['decided'] = True  # prevent re-processing in future slots
 
         # ── Phase 3: Compute transmission energy for offloaded tasks ──
         tx_rates = self._compute_transmission_rates(offload_requests)
@@ -188,7 +189,7 @@ class EdgeOffloadEnv(ParallelEnv):
     # ═══════════════════════════════════════════════════════════════
     def _generate_task(self):
         task = create_task(task_id=self.task_counter, data_range=(2e6, 7e6),
-                          cpu_per_bit=1000.0, latency_range=(10.0, 30.0))
+                          cpu_per_bit=1000.0, latency_range=(3.0, 8.0))  # tight: forces offloading of heavy tasks
         self.task_counter += 1
         return task
 
