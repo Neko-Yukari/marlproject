@@ -51,13 +51,11 @@ class EdgeOffloadEnv(ParallelEnv):
         self.current_slot = 0
         self.task_counter = 0
 
+        # Clear all queues, reset devices
         self.md_devices = {f"device_{i}": Device(i, "mobile", self.device_cpu, self.energy_budget,
                            (np.random.uniform(0,500), np.random.uniform(0,500))) for i in range(self.M)}
         self.es_devices = [Device(self.M+e, "edge", self.server_cpu, float("inf"),
                            (np.random.uniform(0,500), np.random.uniform(0,500))) for e in range(self.E)]
-
-        # Per-MD task state: (task, remaining_local_cycles, remaining_edge_cycles, target_es, arrival_slot, submitted)
-        self.md_tasks = {a: None for a in self.agents}
         self._init_channel_state()
 
         self.episode_metrics = {"total_tasks":0, "completed_tasks":0, "failed_tasks":0,
@@ -66,31 +64,33 @@ class EdgeOffloadEnv(ParallelEnv):
 
     # ═══════════════════════════════════════════════════════════════
     def step(self, actions: Dict[str, Dict]):
-        rewards = {}
+        rewards = {a: 0.0 for a in self.agents}
         terminations = {a: False for a in self.agents}
         truncations = {a: False for a in self.agents}
 
-        # ── Phase 1: Submit new tasks for MDs without active tasks ──
+        # ── Phase 1: NEW task arrives for EVERY MD every slot (paper: j_m^n each slot) ──
         for agent_id in self.agents:
-            if self.md_tasks[agent_id] is None:
-                task = self._generate_task()
-                task.arrival_time = self.current_slot
-                self.md_tasks[agent_id] = {
-                    'task': task, 'rem_local': task.total_cpu_cycles,
-                    'rem_edge': 0.0, 'target_es': None,
-                    'arrival': self.current_slot, 'edge_energy': 0.0
-                }
+            task = self._generate_task()
+            task.arrival_time = self.current_slot
+            self.md_devices[agent_id].tasks_queue.append({
+                'task': task, 'rem_local': task.total_cpu_cycles,
+                'rem_edge': 0.0, 'target_es': None, 'submitted': False,
+                'arrival': self.current_slot, 'edge_energy': 0.0
+            })
 
-        # ── Phase 2: Apply offloading decisions for NEWLY submitted tasks ──
+        # ── Phase 2: Each MD decides offloading for its FRONT task (if not yet submitted) ──
         offload_requests = []
         for agent_id in self.agents:
-            tdata = self.md_tasks[agent_id]
-            if tdata.get('decided'): continue  # already decided, skip
+            q = self.md_devices[agent_id].tasks_queue
+            if not q: continue
+            tdata = q[0]
+            if tdata['submitted']: continue
 
             action = actions.get(agent_id, {"offload_ratio": [0.0], "target_es": 0})
             rho = float(np.clip(np.asarray(action.get("offload_ratio", [0.0])).item(), 0.0, 1.0))
             es_choice = int(action.get("target_es", 0))
 
+            tdata['submitted'] = True
             if rho > 0 and es_choice > 0:
                 es_idx = min(es_choice - 1, self.E - 1)
                 tdata['target_es'] = es_idx
@@ -103,9 +103,8 @@ class EdgeOffloadEnv(ParallelEnv):
                 tdata['target_es'] = None
                 tdata['rem_local'] = tdata['task'].total_cpu_cycles
                 tdata['rem_edge'] = 0.0
-            tdata['decided'] = True  # prevent re-processing in future slots
 
-        # ── Phase 3: Compute transmission energy for offloaded tasks ──
+        # ── Phase 3: Compute transmission energy ──
         tx_rates = self._compute_transmission_rates(offload_requests)
         for agent_id, es_idx, offload_data, tdata in offload_requests:
             rate = max(tx_rates.get((agent_id, es_idx), 1e8), 1e4)
@@ -114,20 +113,18 @@ class EdgeOffloadEnv(ParallelEnv):
             self.md_devices[agent_id].current_energy -= e_edge
             self.es_devices[es_idx].tasks_queue.append(tdata)
 
-        # ── Phase 4: Process local computation (cycles/slot) ──
+        # ── Phase 4: Process local computation (f_m cycles across front tasks, round-robin) ──
         for agent_id in self.agents:
-            tdata = self.md_tasks[agent_id]
-            if tdata is None: continue
             md = self.md_devices[agent_id]
-            processed = min(tdata['rem_local'], md.cpu_capacity)
-            tdata['rem_local'] -= processed
-            if tdata['rem_local'] > 0:
-                e_local = calculate_local_energy(processed / tdata['task'].cpu_cycles_per_bit if tdata['task'].cpu_cycles_per_bit > 0 else 0,
-                                                  tdata['task'].cpu_cycles_per_bit, md.cpu_capacity, self.energy_coeff)
-                md.current_energy -= e_local
-                tdata['task'].energy_consumed += e_local
+            remaining_cpu = md.cpu_capacity
+            for tdata in md.tasks_queue:
+                if remaining_cpu <= 0: break
+                if tdata['rem_local'] <= 0: continue
+                processed = min(tdata['rem_local'], remaining_cpu)
+                tdata['rem_local'] -= processed
+                remaining_cpu -= processed
 
-        # ── Phase 5: Process edge computation (cycles/slot per ES, FIFO) ──
+        # ── Phase 5: Process edge computation (f_e cycles across ES queue, FIFO) ──
         for es in self.es_devices:
             remaining_cpu = es.cpu_capacity
             for tdata in list(es.tasks_queue):
@@ -139,42 +136,39 @@ class EdgeOffloadEnv(ParallelEnv):
                 tdata['rem_edge'] -= processed
                 remaining_cpu -= processed
 
-        # ── Phase 6: Check task completions ──
+        # ── Phase 6: Complete tasks from MD queues ──
         for agent_id in self.agents:
-            tdata = self.md_tasks[agent_id]
-            if tdata is None: continue
-            if tdata['rem_local'] <= 0 and tdata['rem_edge'] <= 0:
-                task = tdata['task']
-                task.completion_time = self.current_slot
-                task.completed = True
-                elapsed = task.completion_time - task.arrival_time
-                task.deadline_met = elapsed <= task.max_latency
-                task.latency = elapsed
+            q = self.md_devices[agent_id].tasks_queue
+            completed = []
+            for tdata in q:
+                if tdata['rem_local'] <= 0 and tdata['rem_edge'] <= 0:
+                    task = tdata['task']
+                    task.completion_time = self.current_slot
+                    task.completed = True
+                    elapsed = task.completion_time - task.arrival_time
+                    task.deadline_met = elapsed <= task.max_latency
+                    task.latency = elapsed
 
-                self.episode_metrics["total_tasks"] += 1
-                if task.deadline_met:
-                    self.episode_metrics["completed_tasks"] += 1
-                else:
-                    self.episode_metrics["failed_tasks"] += 1
-                self.episode_metrics["total_energy"] += task.energy_consumed + tdata.get('edge_energy', 0)
-                self.episode_metrics["total_latency"] += elapsed
+                    self.episode_metrics["total_tasks"] += 1
+                    if task.deadline_met:
+                        self.episode_metrics["completed_tasks"] += 1
+                    else:
+                        self.episode_metrics["failed_tasks"] += 1
+                    self.episode_metrics["total_latency"] += elapsed
 
-                # Reward = negative cost
-                cost = self.cost_weight * elapsed + (1 - self.cost_weight) * (task.energy_consumed + tdata.get('edge_energy', 0))
-                penalty = 10.0 if not task.deadline_met else 0.0
-                rewards[agent_id] = float(-cost - penalty)
-                self.episode_metrics["total_cost"] += cost
+                    cost = self.cost_weight * elapsed + (1 - self.cost_weight) * tdata.get('edge_energy', 0)
+                    self.episode_metrics["total_cost"] += cost
+                    rewards[agent_id] = float(-cost - (10.0 if not task.deadline_met else 0.0))
+                    completed.append(tdata)
 
-                self.md_tasks[agent_id] = None  # free for next task
-                # Remove from ES queue if present
-                if tdata['target_es'] is not None:
-                    es = self.es_devices[tdata['target_es']]
-                    if tdata in es.tasks_queue:
-                        es.tasks_queue.remove(tdata)
-            else:
-                # Task still in progress: small step reward based on progress
-                progress = 1.0 - (tdata['rem_local'] + tdata['rem_edge']) / tdata['task'].total_cpu_cycles
-                rewards[agent_id] = -0.01  # small step penalty
+                    # Remove from ES queue if present
+                    if tdata['target_es'] is not None:
+                        es = self.es_devices[tdata['target_es']]
+                        if tdata in es.tasks_queue:
+                            es.tasks_queue.remove(tdata)
+
+            for tdata in completed:
+                q.remove(tdata)
 
         # ── Phase 7: Termination ──
         self.current_slot += 1
@@ -196,13 +190,14 @@ class EdgeOffloadEnv(ParallelEnv):
     def _get_obs(self, agent_id):
         md = self.md_devices[agent_id]
         obs = np.zeros(self.obs_dim, np.float32)
-        tdata = self.md_tasks.get(agent_id)
-        if tdata and tdata['task']:
-            task = tdata['task']
+        q = md.tasks_queue
+        if q:
+            front = q[0]
+            task = front['task']
             obs[0] = min(task.data_size / 7e6, 1.0)
-            obs[1] = min(task.max_latency / 30.0, 1.0)
-            progress = 1.0 - (tdata['rem_local'] + tdata['rem_edge']) / max(task.total_cpu_cycles, 1)
-            obs[2] = min(progress, 1.0)
+            obs[1] = min(task.max_latency / 8.0, 1.0)
+            total = sum(td['rem_local'] + td['rem_edge'] for td in q)
+            obs[2] = min(total / (md.cpu_capacity * 20), 1.0)  # queue backlog
         obs[3] = max(md.current_energy / max(md.energy_budget, 1.0), 0.0)
         for e in range(self.E):
             es = self.es_devices[e]
