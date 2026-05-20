@@ -276,7 +276,9 @@ class EdgeOffloadEnv(ParallelEnv):
             task = md.tasks_queue[0]
             task.completion_time = self.current_slot
             task.completed = True
-            task.deadline_met = task.latency <= task.max_latency
+            # Deadline in SLOTS (paper: task_deadline_range 5-15)
+            elapsed_slots = task.completion_time - task.arrival_time
+            task.deadline_met = elapsed_slots <= task.max_latency
 
             # Update episode-level metrics
             self.episode_metrics["total_tasks"] += 1
@@ -331,12 +333,12 @@ class EdgeOffloadEnv(ParallelEnv):
     # ── Internal Methods ───────────────────────────────────────────
 
     def _generate_task(self) -> Task:
-        """Generate a task matching paper Fig.1: 2-7e9 CPU cycles per task."""
+        """Generate task matching paper: 2-7e9 cycles, deadline 5-15 slots."""
         task = create_task(
             task_id=self.task_counter,
             data_range=(2e6, 7e6),
             cpu_per_bit=1000.0,
-            latency_range=(0.5, 2.0),
+            latency_range=(5.0, 15.0),  # SLOTS (paper: 5-15 time slots)
         )
         self.task_counter += 1
         return task
