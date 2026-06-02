@@ -1,29 +1,70 @@
 # Python
 __pycache__/
 *.py[cod]
-*.egg-info/
-dist/
+*$py.class
+*.so
+.Python
 build/
-.venv/
-venv/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Training results and checkpoints (large files)
+results/
+!results/.gitkeep
+*.pt
+*.pth
+*.ckpt
+
+# Logs
+*.log
+logs/
 
 # IDE
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Project-specific
-results/
-logs/
-checkpoints/
-runs/
+# Temporary files
+tmp/
+temp/
+*.tmp
 
-# Build artifacts
-generate_manual.py
-qa_verify.py
+# Papers (may be copyrighted)
+papers/*.pdf
+papers/figures/
+papers/extracted_text.txt
 
-# Large papers (keep only PDFs we need)
-papers/ExplabOff_Towards_Explorative_and_Collaborative_Task_Offloading_via_Mutual_Information-Enhanced_MARL/
+# Data files
+data/
+*.csv
+*.json
+!final_report.json
+!cross_eval_results.json
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Environment
+venv/
+env/
+ENV/
+.venv/

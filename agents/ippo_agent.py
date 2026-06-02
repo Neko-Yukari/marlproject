@@ -39,10 +39,15 @@ class IPPOAgent:
         self.trajectory: Dict[str, List] = {"states":[],"actions":[],"rewards":[],
                                              "values":[],"log_probs":[],"dones":[]}
 
-    def select_action(self, state: np.ndarray) -> Tuple[int, float, float]:
+    def select_action(self, state: np.ndarray, action_mask: Optional[np.ndarray] = None) -> Tuple[int, float, float]:
         with torch.no_grad():
             s = torch.from_numpy(state).float().unsqueeze(0).to(self.device)
-            probs, value = self.network(s)
+            mask = torch.from_numpy(action_mask).float().unsqueeze(0).to(self.device) if action_mask is not None else None
+            probs, value = self.network(s, mask)
+            # Handle case where all valid actions have prob 0 (shouldn't happen with proper mask)
+            if mask is not None and probs.sum() < 1e-6:
+                # Fallback: uniform over valid actions
+                probs = mask / mask.sum()
             dist = torch.distributions.Categorical(probs)
             a = dist.sample()
             return a.item(), dist.log_prob(a).item(), value.item()

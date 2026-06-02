@@ -27,9 +27,14 @@ class ActorCriticNetwork(nn.Module):
         self.actor_head = nn.Linear(hidden_dim, action_dim)
         self.critic_head = nn.Linear(hidden_dim, 1)
 
-    def forward(self, state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, state: torch.Tensor, action_mask: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor]:
         features = self.backbone(state)
         logits = self.actor_head(features)
+        
+        if action_mask is not None:
+            # Apply mask: set masked actions to very negative value
+            logits = logits.masked_fill(action_mask == 0, float('-inf'))
+        
         action_probs = torch.softmax(logits, dim=-1)
         value = self.critic_head(features)
         return action_probs, value
