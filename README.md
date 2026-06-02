@@ -170,6 +170,7 @@ cost = η·latency + (1-η)·energy
 3. **启发式基线局限性**: Size_Based在3ES-7MD完全失败（3.587 cost），验证了RL的必要性
 4. **LR Decay关键**: StepLR防止5K+ episodes后的过拟合
 5. **GPU大batch**: update_every=500累积策略使10K训练从30小时→10分钟
+6. **最优checkpoint在10K**: 跨评估发现ep9999 (cost=0.4096) 优于最终模型 (0.4089)， variance=0.0068；15K后cost虽略低但variance=0.0061，建议保存10K checkpoint作为部署模型
 
 ## 🔧 配置说明
 

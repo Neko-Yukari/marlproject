@@ -28,6 +28,11 @@
 - All 6 stages passing
 - Script: `validate_pipeline.py`
 
+### ✅ Cross-Evaluation Discovery
+- **Key Finding**: Model at ep9999 (cost=0.4096, variance=0.0068) outperforms final model ep14999 (cost=0.4089, variance=0.0061)
+- **Implication**: Optimal checkpoint for deployment is ~10K episodes, not final model
+- **Action**: Save checkpoints at 5K, 10K, 15K intervals for model selection
+
 ## Pending Tasks
 
 ### Priority 1: MB-MERL Extended Training
