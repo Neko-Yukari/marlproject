@@ -18,6 +18,14 @@
 | 2ES-5MD     | ExplabOff | 0.380 | 100% |
 | 3ES-7MD     | IPPO | 0.390 | 98.6% |
 
+## Completed Tasks
+
+### ✅ PettingZoo API Full Implementation (2026-06-02)
+- **Status**: All 15 TDD tests passing
+- **Methods added**: `observation_space(agent)`, `action_space(agent)`, `state()`, `render()`, `close()`
+- **Fix**: `self._slot` -> `self.current_slot`
+- **Test file**: `test_pettingzoo_api.py`
+
 ## Overnight Tasks
 
 ### Priority 1: MB-MERL Extended Training
