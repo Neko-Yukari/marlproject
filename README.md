@@ -41,6 +41,9 @@ python trainers/stage1_train.py --config configs/3es7md_explaboff.yaml
 
 # 多环境benchmark（对比所有算法）
 python trainers/stage2_train.py --benchmark all
+
+# 验证训练流水线（快速检查所有组件）
+python validate_pipeline.py
 ```
 
 ### 运行基线对比
