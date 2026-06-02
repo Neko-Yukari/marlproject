@@ -28,6 +28,10 @@
 - All 6 stages passing
 - Script: `validate_pipeline.py`
 
+### ✅ Codebase Cleanup
+- Removed 20 redundant scripts (old env versions, experiment variants, temp files)
+- Retained core: multi_env_benchmark.py, train_3es7md_full.py, test_pettingzoo_api.py, validate_pipeline.py
+
 ### ✅ Cross-Evaluation Discovery
 - **Key Finding**: Model at ep9999 (cost=0.4096, variance=0.0068) outperforms final model ep14999 (cost=0.4089, variance=0.0061)
 - **Implication**: Optimal checkpoint for deployment is ~10K episodes, not final model
