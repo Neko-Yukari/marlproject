@@ -195,6 +195,46 @@ class PaperAccurateEnvV3(ParallelEnv):
         if seed is not None:
             np.random.seed(seed)
     
+    # ── PettingZoo API: Per-agent spaces ──
+    def observation_space(self, agent):
+        """Return observation space for a single agent."""
+        return self._observation_spaces[agent]
+    
+    def action_space(self, agent):
+        """Return action space for a single agent."""
+        return self._action_spaces[agent]
+    
+    # ── PettingZoo API: Global state ──
+    def state(self):
+        """Return global environment state (optional for decentralized training)."""
+        # Return summary of current episode state
+        if not hasattr(self, '_slot_tasks') or not self._slot_tasks:
+            return None
+        return {
+            'task_sizes': {agent_id: task['size_mb'] 
+                          for agent_id, task in self._slot_tasks.items()},
+            'es_cpu': self.es_cpu_list,
+            'slot': self.current_slot,
+        }
+    
+    # ── PettingZoo API: Rendering ──
+    def render(self):
+        """Render environment state (text-based)."""
+        if not hasattr(self, '_slot_tasks'):
+            print("Environment not initialized. Call reset() first.")
+            return
+        print(f"[Render] Slot {self.current_slot}/{self.NUM_SLOTS}")
+        for agent_id, task in sorted(self._slot_tasks.items()):
+            md_idx = int(agent_id.split('_')[1])
+            status = "DONE" if task['completed'] else "PENDING"
+            print(f"  MD{md_idx}: {task['size_mb']:.1f}Mb | {status}")
+    
+    # ── PettingZoo API: Cleanup ──
+    def close(self):
+        """Clean up environment resources."""
+        # Nothing to clean up for this environment
+        pass
+    
     def _generate_default_profiles(self) -> List[List[float]]:
         """Generate reasonable default profiles for unsupported configs."""
         # Scale: larger M needs smaller individual tasks
