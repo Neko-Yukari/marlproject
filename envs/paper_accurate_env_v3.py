@@ -154,7 +154,7 @@ class PaperAccurateEnvV3(ParallelEnv):
     DEADLINE = 1.0
     TX_POWER = 0.1
     ENERGY_COEFF = 1e-27
-    BANDWIDTH = 100e6
+    BANDWIDTH = 10e6
     ETA = 0.5
     TASK_SIZE_STD = 0.1  # Small per-task variance
     
@@ -446,6 +446,84 @@ class PaperAccurateEnvV3(ParallelEnv):
         if es_idx < len(self.es_cpu_list):
             return self.es_cpu_list[es_idx]
         return 10e9
+    
+    def get_graph_data(self):
+        """
+        Return graph structure data for GNN processing.
+        Uses PettingZoo's self.agents for dynamic agent enumeration.
+        
+        Enhanced features for better GNN learning:
+        - MD: [task_size_norm, local_deadline_margin, relative_power, slot_progress]
+        - ES: [cpu_norm, queue_fill_ratio, service_capacity, avg_wait_proxy]
+        
+        Returns:
+            node_features: [num_md + num_es, 4]
+            node_types: [num_md + num_es] - 0=MD, 1=ES
+            edge_index: [2, num_md * num_es * 2] - fully connected bipartite
+        """
+        import torch
+        
+        # Use PettingZoo's agents list (dynamic)
+        active_agents = self.agents
+        num_md = len(active_agents)
+        num_es = self.E
+        num_nodes = num_md + num_es
+        max_cpu = max(max(self.es_cpu_list), self.MD_CPU) if self.es_cpu_list else 30e9
+        
+        node_features = torch.zeros(num_nodes, 4)
+        node_types = torch.zeros(num_nodes, dtype=torch.long)
+        
+        # MD nodes: [task_size_norm, local_deadline_margin, relative_power, slot_progress]
+        for i, agent_id in enumerate(active_agents):
+            md_idx = int(agent_id.split("_")[1])
+            # Use cached task if available
+            if agent_id in self._slot_tasks:
+                task = self._slot_tasks[agent_id]
+            else:
+                task = self._generate_task(md_idx)
+                self._slot_tasks[agent_id] = task
+            
+            # Compute local execution time and deadline margin
+            t_loc = task["cycles"] / self.MD_CPU
+            local_margin = (self.DEADLINE - t_loc) / self.DEADLINE
+            
+            node_features[i] = torch.tensor([
+                task["size_mb"] / 10.0,              # Normalized task size
+                local_margin,                         # Negative if local fails
+                self.MD_CPU / max_cpu,                # Relative compute power
+                float(self.current_slot) / 10.0      # Episode progress
+            ])
+            node_types[i] = 0  # MD
+        
+        # ES nodes: [cpu_norm, queue_fill_ratio, service_capacity, wait_proxy]
+        max_es_cpu = max(self.es_cpu_list) if self.es_cpu_list else 30e9
+        for j in range(num_es):
+            es_cpu = self._get_es_cpu(j)
+            # Queue fill ratio: how full is this ES relative to fair share
+            fair_share = num_md / num_es if num_es > 0 else num_md
+            queue_fill = self.es_queue_counts[j] / max(fair_share, 1.0)
+            # Service capacity: relative to fastest ES
+            service_cap = es_cpu / max_es_cpu if max_es_cpu > 0 else 1.0
+            # Wait proxy: estimated wait based on queue length
+            wait_proxy = min(self.es_queue_counts[j] * 0.2, 1.0)
+            
+            node_features[num_md + j] = torch.tensor([
+                es_cpu / max_cpu,                    # Normalized CPU
+                queue_fill,                          # Queue saturation
+                service_cap,                         # Relative speed
+                wait_proxy                           # Estimated congestion
+            ])
+            node_types[num_md + j] = 1  # ES
+        
+        # Edge index: fully connected bipartite (both directions)
+        edge_list = []
+        for i in range(num_md):
+            for j in range(num_es):
+                edge_list.append([i, num_md + j])  # MD -> ES
+                edge_list.append([num_md + j, i])  # ES -> MD
+        edge_index = torch.tensor(edge_list, dtype=torch.long).t()  # [2, num_edges]
+        
+        return node_features, node_types, edge_index
     
     def get_episode_metrics(self):
         total = max(self.episode_metrics["total_tasks"], 1)

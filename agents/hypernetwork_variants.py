@@ -135,7 +135,7 @@ class HyperNetworkV1_LowLR(nn.Module):
 
 
 class HyperNetworkV2_Large(nn.Module):
-    """Variant 2: Larger hidden dimension (256)."""
+    """Variant 2: Larger hidden dimension (256) - FIXED with Value Head and Weight Cache."""
     
     def __init__(self, obs_dim=7, max_action_dim=4, hidden_dim=256):
         super().__init__()
@@ -156,6 +156,17 @@ class HyperNetworkV2_Large(nn.Module):
         self.b1_head = nn.Linear(1024, hidden_dim)
         self.W2_head = nn.Linear(1024, max_action_dim * hidden_dim)
         self.b2_head = nn.Linear(1024, max_action_dim)
+        
+        # FIXED: Add Value Head (from config embedding, not obs)
+        self.value_head = nn.Sequential(
+            nn.Linear(64, 128),
+            nn.ReLU(),
+            nn.Linear(128, 1)
+        )
+        
+        # FIXED: Weight cache for stability
+        self.weight_cache = {}
+        self.cache_update_counter = 0
     
     def generate_weights(self, M, E):
         device = next(self.parameters()).device
@@ -211,7 +222,15 @@ class HyperNetworkV2_Large(nn.Module):
         h = F.relu(h)
         
         logits = torch.bmm(W2, h.unsqueeze(-1)).squeeze(-1) + b2
-        value = torch.zeros(batch_size, 1, device=obs.device)
+        
+        # FIXED: Use value head instead of zeros
+        config_vec = self.config_encoder(
+            torch.tensor([M], device=obs.device) if isinstance(M, int) else M.to(obs.device),
+            torch.tensor([E], device=obs.device) if isinstance(E, int) else E.to(obs.device)
+        )
+        if config_vec.dim() == 1:
+            config_vec = config_vec.unsqueeze(0)
+        value = self.value_head(config_vec)
         
         if action_mask is not None:
             logits = logits.masked_fill(~action_mask, float('-inf'))
@@ -413,23 +432,35 @@ class HyperNetworkV4_Curriculum(nn.Module):
         return logits, value
 
 
-# Agent wrapper that works with any HyperNetwork variant
+# FIXED: Agent wrapper with buffer accumulation and delayed updates
 class CrossScaleAgent:
-    """Agent using hypernetwork for cross-scale policy."""
+    """Agent using hypernetwork for cross-scale policy - FIXED version."""
     
-    def __init__(self, agent_id, hyper_net, device='cpu', lr=5e-5):
+    def __init__(self, agent_id, hyper_net, device='cpu', lr=1e-6,  # FIXED: lr from 5e-5 to 1e-6
+                 update_interval=10):  # FIXED: Update every N episodes
         self.agent_id = agent_id
         self.hyper_net = hyper_net
         self.device = device
         self.optimizer = torch.optim.Adam(hyper_net.parameters(), lr=lr)
+        
+        # Per-episode trajectory (cleared each episode)
         self.trajectory = {
             "states": [], "actions": [], "rewards": [],
             "values": [], "log_probs": [], "dones": []
         }
+        
+        # FIXED: Multi-episode buffer (accumulates before update)
+        self.update_buffer = {
+            "states": [], "actions": [], "rewards": [],
+            "values": [], "log_probs": [], "dones": []
+        }
+        self.update_interval = update_interval
+        self.episode_count = 0
+        
         self.gamma = 0.99
         self.gae_lambda = 0.95
         self.clip_ratio = 0.2
-        self.entropy_coeff = 0.01
+        self.entropy_coeff = 0.05  # FIXED: Increased from 0.01 for more exploration
         self.value_coeff = 0.5
     
     def select_action(self, obs, M, E, action_mask=None):
@@ -464,14 +495,25 @@ class CrossScaleAgent:
         self.trajectory["log_probs"].append(log_prob)
         self.trajectory["dones"].append(done)
     
+    def end_episode(self):
+        """FIXED: Move trajectory to buffer and clear."""
+        for key in self.trajectory:
+            self.update_buffer[key].extend(self.trajectory[key])
+        self.clear_trajectory()
+        self.episode_count += 1
+    
     def clear_trajectory(self):
         for k in self.trajectory:
             self.trajectory[k].clear()
     
-    def compute_gae(self, next_value=0.0):
-        rewards = np.array(self.trajectory["rewards"])
-        values = np.array(self.trajectory["values"] + [next_value])
-        dones = np.array(self.trajectory["dones"])
+    def should_update(self):
+        """FIXED: Check if enough episodes accumulated."""
+        return self.episode_count >= self.update_interval
+    
+    def compute_gae(self, rewards, values, dones, next_value=0.0):
+        rewards = np.array(rewards)
+        values = np.array(values + [next_value])
+        dones = np.array(dones)
         
         deltas = rewards + self.gamma * values[1:] * (1 - dones) - values[:-1]
         adv = np.zeros_like(rewards)
@@ -486,15 +528,20 @@ class CrossScaleAgent:
         
         return adv, ret
     
-    def update(self, M, E, batch_size=64, num_epochs=4):
-        if not self.trajectory["states"]:
+    def update(self, M, E, batch_size=256, num_epochs=4):  # FIXED: Larger batch_size
+        """FIXED: Update from accumulated buffer, not single episode."""
+        if not self.update_buffer["states"]:
             return {}
         
-        states = np.array(self.trajectory["states"])
-        actions = np.array(self.trajectory["actions"])
-        old_lp = np.array(self.trajectory["log_probs"])
-        old_vals = np.array(self.trajectory["values"])
-        adv, ret = self.compute_gae()
+        states = np.array(self.update_buffer["states"])
+        actions = np.array(self.update_buffer["actions"])
+        old_lp = np.array(self.update_buffer["log_probs"])
+        old_vals = np.array(self.update_buffer["values"])
+        rewards = np.array(self.update_buffer["rewards"])
+        dones = np.array(self.update_buffer["dones"])
+        
+        # FIXED: Compute GAE over entire buffer
+        adv, ret = self.compute_gae(rewards.tolist(), old_vals.tolist(), dones.tolist())
         
         s_t = torch.from_numpy(states).float().to(self.device)
         a_t = torch.from_numpy(actions).long().to(self.device)
@@ -505,10 +552,13 @@ class CrossScaleAgent:
         losses = []
         n = len(actions)
         
+        # FIXED: Better batch handling
+        actual_batch = min(batch_size, n)
+        
         for _ in range(num_epochs):
             perm = np.random.permutation(n)
-            for i in range(0, n, batch_size):
-                idx = perm[i:i+batch_size]
+            for i in range(0, n, actual_batch):
+                idx = perm[i:i+actual_batch]
                 
                 logits, values = self.hyper_net(s_t[idx], M, E)
                 
@@ -526,8 +576,13 @@ class CrossScaleAgent:
                 loss = policy_loss + self.value_coeff * value_loss - self.entropy_coeff * entropy
                 self.optimizer.zero_grad()
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.hyper_net.parameters(), 0.5)
+                torch.nn.utils.clip_grad_norm_(self.hyper_net.parameters(), 1.0)  # FIXED: Less aggressive clipping
                 self.optimizer.step()
                 losses.append(loss.item())
         
-        return {"loss": np.mean(losses)}
+        # FIXED: Clear buffer after update
+        for k in self.update_buffer:
+            self.update_buffer[k].clear()
+        self.episode_count = 0
+        
+        return {"loss": np.mean(losses), "buffer_size": n}

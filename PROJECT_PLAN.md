@@ -37,12 +37,32 @@
 - **Implication**: Optimal checkpoint for deployment is ~10K episodes, not final model
 - **Action**: Save checkpoints at 5K, 10K, 15K intervals for model selection
 
+## Completed Tasks (Recently)
+
+### ✅ GNN Implementation Plan - APPROVED (Round 3)
+- **Reviewer**: substantial-amber-egret
+- **Status**: APPROVE - All critical and major issues resolved
+- **Key fixes**: MI dimension mismatch (C3), parameter sharing (C4), batch support (M1), action masking (M6)
+- **Location**: `docs/GNN_IMPLEMENTATION_PLAN.md`
+- **Next**: Implement GNN backbone, IPPO-GNN, ExplabOff-GNN agents
+
 ## Pending Tasks
 
-### Priority 1: MB-MERL Extended Training
-- Status: Under-tuned (2.156 cost)
-- Need: 50K+ meta-training episodes
-- Goal: Achieve <0.390 on 3ES-7MD
+### 🔄 Priority 1: GNN Implementation (READY TO START)
+- **Status**: Plan approved, ready for implementation
+- **Components**:
+  1. GNNActorCritic (Graph Attention backbone)
+  2. IPPOAgentGNN (GNN-based policy)
+  3. ExplabOffAgentGNN (GNN + MI estimators)
+  4. Universal training script (variable obs_dim)
+- **ETA**: 2-3 days
+- **GPU**: RTX 4080 SUPER
+
+### Priority 2: Overnight Large-Scale Training (BLOCKED)
+- **Status**: 2ES-3MD IPPO 50K completed (cost→0.41, 100% comp)
+- **Issue**: Script crashes with DLL error (-1073741502) on re-run
+- **Checkpoints**: Saved at 5K, 10K, 20K, 50K in `results/overnight_checkpoints/`
+- **Note**: GNN implementation will supersede this (variable obs_dim support)
 
 ### Priority 2: Advanced Algorithm Exploration
 - Transformer-based critic

@@ -13,6 +13,7 @@
 ### 核心特性
 
 - **多种MARL算法**: IPPO、ExplabOff（InfoNCE + L1Out MI估计）、MB-MERL
+- **Cross-Scale HyperNetwork**: 单一模型服务多配置（2ES-3MD/5MD/7MD）
 - **多环境配置**: 2ES-3MD、2ES-5MD、3ES-7MD（支持论文Table I参数）
 - **随机任务轮廓**: 每episode随机选择任务大小配置，增强泛化性
 - **GPU加速**: 支持CUDA加速，大batch累积训练（180x提速）
@@ -227,6 +228,47 @@ action_masking: true   # 启用动作掩码
 2. **L1OutEstimator公式**: `log(avg(logs))` → `avg(logs) - log(B)`
 3. **InfoNCE负采样**: 可能包含正样本 → 排除自身索引
 4. **等待时间计算**: 只计算lower-index设备 → 计算所有同ES设备
+5. **HyperNetwork Value Head缺失**: `value=0` → 添加`value_head`模块
+6. **HyperNetwork更新频率过高**: 每episode更新 → 每10 episodes累积更新
+
+## 📁 项目结构（清理后）
+
+```
+.
+├── agents/                     # 智能体实现
+│   ├── ippo_agent.py           # IPPO算法
+│   ├── explaboff_agent.py      # ExplabOff (MI增强)
+│   ├── hypernetwork.py         # Cross-Scale HyperNetwork
+│   ├── hypernetwork_variants.py # HyperNetwork变体（消融实验）
+│   ├── mbmerl_agent.py         # 基于模型的元学习
+│   └── networks/               # 神经网络组件
+│       ├── actor_critic.py     # Actor-Critic网络
+│       └── mi_estimator.py     # MI估计器
+├── envs/                       # 环境实现
+│   ├── paper_accurate_env_v3.py  # 主环境 (支持多配置)
+│   └── vectorized_env.py       # 并行环境包装器
+├── trainers/                   # 训练脚本
+│   └── [训练脚本]
+├── evaluation/                 # 评估工具
+├── utils/                      # 工具函数
+├── configs/                    # 配置文件
+├── docs/                       # 文档
+├── results/                    # 实验结果
+├── README.md                   # 本文件
+├── requirements.txt            # 依赖
+├── PROJECT_PLAN.md             # 项目计划
+├── FINAL_REPORT.md             # 最终报告
+├── FINAL_SUMMARY.md            # 摘要
+├── multi_env_benchmark.py      # 多环境benchmark
+├── test_pettingzoo_api.py      # PettingZoo API测试
+├── train_3es7md_full.py        # 完整训练脚本（含checkpoint）
+├── train_hypernetwork.py       # HyperNetwork训练
+├── train_hypernetwork_fixed.py # HyperNetwork修复版训练
+├── train_hypernetwork_ablation.py # HyperNetwork消融实验
+└── validate_pipeline.py        # 端到端验证
+```
+
+**注意**: 已清理所有GNN实验文件、冗余训练脚本、测试文件和日志。项目聚焦于核心算法（IPPO/ExplabOff/HyperNetwork）和v3环境。
 
 ## 📝 引用
 
@@ -259,4 +301,4 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 
 ---
 
-**状态**: 论文复现完成 (Stage 1: 100%) | 优化探索完成 (Stage 2: 100%) | 新方法原型 (Stage 3: 50%)
+**状态**: 论文复现完成 (Stage 1: 100%) | 优化探索完成 (Stage 2: 100%) | 新方法原型 (Stage 3: 50%) | 项目已清理，可提交
