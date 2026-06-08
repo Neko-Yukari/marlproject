@@ -1,0 +1,19 @@
+# Baseline Configuration - Greedy
+name: "baseline_greedy_3es7md"
+
+environment:
+  num_md: 7
+  num_es: 3
+  randomize_profile: true
+  profile_noise: 0.05
+
+algorithm:
+  type: "Baseline"
+  strategy: "Greedy"
+
+training:
+  episodes: 1000
+  log_interval: 100
+  update_every: 1
+  batch_size: 1
+  num_epochs: 1

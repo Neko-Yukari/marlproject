@@ -1,0 +1,23 @@
+# HyperNetwork Configuration - Cross-Scale
+name: "hypernetwork_cross_scale"
+
+environment:
+  num_md: 3  # Default, will be randomized during training
+  num_es: 2
+  randomize_profile: true
+  profile_noise: 0.05
+
+algorithm:
+  type: "HyperNetwork"
+  obs_dim: 7
+  max_action_dim: 4
+  hidden_dim: 256
+  lr: 1.0e-6
+  update_interval: 10
+
+training:
+  episodes: 20000
+  log_interval: 1000
+  update_every: 10
+  batch_size: 256
+  num_epochs: 5
