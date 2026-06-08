@@ -34,23 +34,20 @@ pip install torch numpy pettingzoo gymnasium matplotlib
 ### 运行训练
 
 ```bash
-# IPPO训练（3ES-7MD，20K episodes）
-python trainers/stage1_train.py --config configs/3es7md_ippo.yaml
+# IPPO + ExplabOff 多环境benchmark（对比所有算法）
+python multi_env_benchmark.py
 
-# ExplabOff训练（3ES-7MD，20K episodes）
-python trainers/stage1_train.py --config configs/3es7md_explaboff.yaml
+# 完整训练（3ES-7MD，含checkpoint保存）
+python train_3es7md_full.py
 
-# 多环境benchmark（对比所有算法）
-python trainers/stage2_train.py --benchmark all
+# HyperNetwork跨配置训练
+python train_hypernetwork_fixed.py
 
 # 验证训练流水线（快速检查所有组件）
 python validate_pipeline.py
-```
 
-### 运行基线对比
-
-```bash
-python evaluation/baseline_comparison.py --env-config configs/3es7md_env.yaml
+# PettingZoo API测试
+python test_pettingzoo_api.py
 ```
 
 ## 📊 算法原理
