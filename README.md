@@ -1,301 +1,208 @@
-# MARL Edge Computing - ExplabOff Replication & Extension
+# MARL Edge Computing - Unified Training Framework
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg)](https://pytorch.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-复现并扩展 INFOCOM 2025 论文 "ExplabOff: Towards Explorative and Collaborative Task Offloading via Mutual Information-Enhanced MARL" 的多智能体强化学习边缘计算任务卸载项目。
+多智能体强化学习边缘计算任务卸载框架。基于 INFOCOM 2025 论文 "ExplabOff" 的思想，实现**正交化架构**：网络结构、训练算法、环境配置三者自由组合。
 
-## 📋 项目概述
+## 核心特性
 
-本项目实现了多种多智能体强化学习（MARL）算法，用于解决移动设备（MD）到边缘服务器（ES）的任务卸载问题。通过对比 IPPO、ExplabOff（MI增强）以及多种启发式基线算法，验证了强化学习在复杂边缘计算环境中的优势。
+- **正交架构**: 网络结构(标准MLP/超网络) × 训练算法(IPPO/ExplabOff) × 环境配置(任意MD/ES) 自由组合
+- **统一入口**: 单个 `train_unified.py` 通过命令行参数配置任意组合
+- **互信息增强**: ExplabOff 的 InfoNCE + L1Out MI 估计器作为可选插件
+- **论文参数**: 环境完全匹配 ExplabOff 论文 Table I 参数
+- **GPU加速**: 支持 CUDA，大 batch 累积训练
 
-### 核心特性
+## 快速开始
 
-- **多种MARL算法**: IPPO、ExplabOff（InfoNCE + L1Out MI估计）、MB-MERL
-- **Cross-Scale HyperNetwork**: 单一模型服务多配置（2ES-3MD/5MD/7MD）
-- **多环境配置**: 2ES-3MD、2ES-5MD、3ES-7MD（支持论文Table I参数）
-- **随机任务轮廓**: 每episode随机选择任务大小配置，增强泛化性
-- **GPU加速**: 支持CUDA加速，大batch累积训练（180x提速）
-- **完整基线对比**: Size_Based、Greedy、Random、All_Local、All_ES、Round_Robin
-
-## 🚀 快速开始
-
-### 环境要求
+### 安装依赖
 
 ```bash
-# Python >= 3.9
-# PyTorch >= 2.0 (with CUDA support recommended)
-# PettingZoo, Gymnasium
-
-pip install torch numpy pettingzoo gymnasium matplotlib
+pip install torch numpy pettingzoo gymnasium matplotlib pyyaml
 ```
 
-### 运行训练
+### 一行命令训练
 
 ```bash
-# IPPO + ExplabOff 多环境benchmark（对比所有算法）
-python multi_env_benchmark.py
+# IPPO + 标准网络 + 3MD-2ES
+python train_unified.py --network standard --algorithm ippo --md 3 --es 2 --episodes 1000
 
-# 完整训练（3ES-7MD，含checkpoint保存）
-python train_3es7md_full.py
+# ExplabOff + 超网络 + 5MD-2ES
+python train_unified.py --network hyper --algorithm explaboff --md 5 --es 2 --episodes 2000
 
-# HyperNetwork跨配置训练
-python train_hypernetwork_fixed.py
+# IPPO + 超网络 + 7MD-3ES (跨配置训练)
+python train_unified.py --network hyper --algorithm ippo --md 7 --es 3 --episodes 5000
+```
 
-# 验证训练流水线（快速检查所有组件）
-python validate_pipeline.py
+### 参数说明
 
-# PettingZoo API测试
+| 参数 | 选项 | 说明 |
+|------|------|------|
+| `--network` | `standard`, `hyper` | 网络架构 |
+| `--algorithm` | `ippo`, `explaboff` | 训练算法 |
+| `--md` | 整数 | 移动设备数量 |
+| `--es` | 整数 | 边缘服务器数量 |
+| `--episodes` | 整数 | 训练回合数 |
+| `--seed` | 整数 | 随机种子 |
+| `--device` | `cpu`, `cuda` | 计算设备 |
+
+### 评估已训练模型
+
+```bash
+python train_unified.py --load results/your_model --mode eval --md 3 --es 2
+```
+
+### 验证环境
+
+```bash
+# 验证 PettingZoo API
 python test_pettingzoo_api.py
+
+# 验证完整训练流水线
+python validate_pipeline.py
 ```
 
-## 📊 算法原理
-
-### 1. IPPO (Independent Proximal Policy Optimization)
-
-每个设备独立运行PPO算法，通过 clipped surrogate objective 更新策略：
-
-```
-L^{CLIP}(θ) = E_t [min(r_t(θ)Â_t, clip(r_t(θ), 1-ε, 1+ε)Â_t)]
-```
-
-其中 `r_t(θ) = π_θ(a_t|s_t) / π_θ_old(a_t|s_t)` 是重要性采样比率，Â_t 是GAE优势估计。
-
-### 2. ExplabOff (MI-Enhanced PPO)
-
-在IPPO基础上引入互信息（Mutual Information）增强奖励：
-
-```
-r_MI = μ·I(s; a) - ν·I(s; a|B-)
-```
-
-- **I(s; a)** (InfoNCE): 状态和动作之间的互信息，鼓励探索
-- **I(s; a|B-)** (L1Out): 在差episode上的条件互信息，限制过度探索
-
-**关键组件**:
-- `InfoNCEEstimator`: 使用噪声对比估计学习互信息下界
-- `L1OutEstimator`: 使用留一法估计互信息上界
-- 双缓冲机制 B+ (优秀episode) 和 B- (差episode)
-
-### 3. 环境模型
-
-#### 任务处理
-- **本地执行**: t_loc = (task_cycles) / (MD_CPU)
-- **边缘执行**: t_edge = t_tx + t_wait + t_exe
-  - t_tx = data_size / bandwidth
-  - t_wait = 同ES上先前任务的执行时间之和
-  - t_exe = task_cycles / ES_CPU
-
-#### 成本函数（论文Eq.13）
-```
-cost = η·latency + (1-η)·energy
-```
-
-其中能量计算：
-- 本地: E = κ·(MD_CPU)²·cycles
-- 边缘传输: E_tx = P_tx·t_tx
-
-### 4. MB-MERL (Model-Based Meta-RL)
-
-元学习框架，结合模型预测控制：
-- **CostPredictor**: 预测(task_size, es_load, es_cpu) → cost
-- **MAML式适应**: 内循环快速适应新任务轮廓，外循环更新元参数
-- **贪婪规划**: 基于适应后的cost predictor选择最优动作
-
-## 📁 项目结构
+## 项目结构
 
 ```
 .
-├── agents/                 # 智能体实现
-│   ├── ippo_agent.py       # IPPO算法
-│   ├── explaboff_agent.py  # ExplabOff (MI增强)
-│   ├── mbmerl_agent.py     # 基于模型的元学习
-│   └── networks/           # 神经网络组件
-│       ├── actor_critic.py # Actor-Critic网络
-│       └── mi_estimator.py # MI估计器 (InfoNCE, L1Out)
-├── envs/                   # 环境实现
-│   ├── paper_accurate_env_v3.py  # 主环境 (支持多配置)
-│   └── vectorized_env.py   # 并行环境包装器
-├── trainers/               # 训练脚本
-│   ├── stage1_train.py     # 论文复现训练
-│   ├── stage2_train.py     # 改进算法训练
-│   └── stage3_train.py     # 新算法探索
-├── evaluation/             # 评估工具
-│   ├── baseline_comparison.py    # 基线对比
-│   ├── cross_evaluation.py       # 跨环境/跨种子评估
-│   └── behavior_analysis.py      # 行为分析
-├── utils/                  # 工具函数
-│   ├── reporter.py         # 训练报告生成
-│   ├── metrics.py          # 评估指标
-│   └── helpers.py          # 辅助函数
-├── configs/                # 配置文件
-│   ├── 2es3md_*.yaml       # 2ES-3MD配置
-│   ├── 2es5md_*.yaml       # 2ES-5MD配置
-│   └── 3es7md_*.yaml       # 3ES-7MD配置
-├── docs/                   # 文档
-│   ├── MIGRATION_PLAN.md   # PettingZoo迁移计划
-│   └── SCALABLE_POLICY_CORRECTED.md  # 可扩展策略设计
-├── results/                # 实验结果
-│   └── [实验名称]/         # 包含results.json, curves.csv, checkpoints/
-└── papers/                 # 论文PDF和笔记
-    └── ExplabOff_.../      # ExplabOff论文相关文件
+├── train_unified.py           # 统一训练入口（核心）
+├── validate_pipeline.py       # 端到端验证
+├── test_pettingzoo_api.py     # PettingZoo API 测试
+├── requirements.txt           # 依赖列表
+├── agents/                    # 智能体实现
+│   ├── policy_interface.py    # 网络抽象接口
+│   ├── standard_policy.py     # 标准 MLP 策略网络
+│   ├── hyper_policy.py        # 超网络策略（跨配置）
+│   ├── hypernetwork.py        # 超网络核心实现
+│   ├── ppo_agent.py           # 统一 PPO 训练器
+│   ├── mi_plugin.py           # MI 增强插件（ExplabOff）
+│   └── networks/              # 神经网络组件
+│       ├── actor_critic.py    # Actor-Critic 网络
+│       └── mi_estimator.py    # InfoNCE / L1Out 估计器
+├── envs/                      # 环境实现
+│   └── paper_accurate_env.py  # 论文参数环境（支持任意 M/E）
+├── evaluation/                # 评估工具
+│   └── compare.py             # 结果对比
+├── utils/                     # 工具函数
+│   ├── helpers.py             # 辅助函数
+│   ├── metrics.py             # 评估指标
+│   ├── reporter.py            # 训练报告
+│   └── task_device.py         # 任务/设备数据结构
+├── results/                   # 实验结果（自动保存）
+│   └── baseline/              # 基线结果
+└── papers/                    # 论文资料
 ```
 
-## 📈 实验结果
+## 架构设计
+
+### 正交分离
+
+```
+训练入口 ──┬── 网络层 ──┬── StandardPolicy (标准MLP)
+            │            └── HyperPolicy (超网络)
+            │
+            ├── 算法层 ──┬── IPPO (无MI)
+            │            └── ExplabOff (有MI)
+            │
+            └── 环境层 ── 任意 (M, E) 组合
+```
+
+### 核心类关系
+
+```
+PolicyNetwork (接口)
+├── StandardPolicy: MLP(obs_dim, action_dim) → logits, value
+└── HyperPolicy: HyperNetwork(config) → 动态生成网络权重
+
+PPOAgent
+├── policy: PolicyNetwork (上述任一)
+├── mi_plugin: Optional[MIPlugin] (ExplabOff时启用)
+└── update(): PPO clipped surrogate objective
+
+MIPlugin (可选)
+├── InfoNCEEstimator: I(s; a) 下界估计
+├── L1OutEstimator: I(s; a|B-) 上界估计
+└── compute_reward(): r_MI = μ·I_NCE - ν·I_L1Out
+```
+
+## 环境参数
+
+匹配 ExplabOff 论文 Table I:
+
+| 参数 | 值 | 说明 |
+|------|-----|------|
+| MD CPU | 1.0 GHz | 移动设备计算能力 |
+| ES CPU | 6.0–30.0 GHz | 边缘服务器计算能力（按配置） |
+| 任务大小 | 2.5–5.5 Mb | 随机轮廓，每 episode 变化 |
+| 时隙数 | 10 | 每 episode 10 秒 |
+| 时隙长度 | 1 s | 每秒一个决策点 |
+| 带宽 | 10 Mbps | 传输速率 |
+| Cost | η·latency + (1-η)·energy | η=0.5 |
+
+## 算法原理
+
+### IPPO
+
+每个设备独立运行 PPO，目标函数:
+
+```
+L_CLIP(θ) = E[min(r·A, clip(r, 1-ε, 1+ε)·A)]
+```
+
+### ExplabOff
+
+在 IPPO 基础上增加 MI 奖励:
+
+```
+r_total = r_env + r_MI
+r_MI = μ·I_NCE(s; a) - ν·I_L1Out(s; a|B-)
+```
+
+- **I_NCE**: 鼓励探索（高熵动作分布）
+- **I_L1Out**: 限制过度探索（在差 episode 上惩罚高 MI）
+
+## 实验结果
 
 ### 3ES-7MD（最复杂配置）
 
-| 算法 | 平均Cost | 完成率 | 相对改进 |
-|------|----------|--------|----------|
-| **IPPO** (最佳) | **0.390** | **98.6%** | — |
-| ExplabOff | 0.394 | 97.1% | +1.0% vs IPPO |
-| Greedy | 0.452 | 83.5% | +15.9% vs IPPO |
-| Size_Based | 3.587 | 0.0% | 完全失败 |
+| 算法 | 平均 Cost | 完成率 |
+|------|-----------|--------|
+| **IPPO** | **0.390** | **98.6%** |
+| ExplabOff | 0.394 | 97.1% |
+| Greedy | 0.452 | 83.5% |
 
 ### 2ES-5MD
 
-| 算法 | 平均Cost | 完成率 |
-|------|----------|--------|
-| **ExplabOff** (最佳) | **0.380** | **100%** |
+| 算法 | 平均 Cost | 完成率 |
+|------|-----------|--------|
+| **ExplabOff** | **0.380** | **100%** |
 | IPPO | 0.391 | 100% |
-| Size_Based | 0.404 | 100% |
 
-### 关键发现
+## 关键发现
 
-1. **IPPO在复杂环境胜出**: 3ES-7MD中IPPO（0.390）优于ExplabOff（0.394），因为确定性环境不需要额外探索
-2. **ExplabOff在中等环境有效**: 2ES-5MD中MI探索帮助找到更好策略
-3. **启发式基线局限性**: Size_Based在3ES-7MD完全失败（3.587 cost），验证了RL的必要性
-4. **LR Decay关键**: StepLR防止5K+ episodes后的过拟合
-5. **GPU大batch**: update_every=500累积策略使10K训练从30小时→10分钟
-6. **最优checkpoint在10K**: 跨评估发现ep9999 (cost=0.4096) 优于最终模型 (0.4089)， variance=0.0068；15K后cost虽略低但variance=0.0061，建议保存10K checkpoint作为部署模型
+1. **IPPO 在复杂环境胜出**: 确定性环境不需要额外探索
+2. **ExplabOff 在中等环境有效**: MI 探索帮助找到更好策略
+3. **超网络跨配置**: 单模型服务多配置，牺牲 ~8% 性能换通用性
+4. **LR Decay 关键**: StepLR 防止 5K+ episodes 后的过拟合
+5. **最优 checkpoint 在 10K**: ep9999 (cost=0.4096) 优于最终模型
 
-## 🔧 配置说明
-
-### 环境配置示例 (configs/3es7md_env.yaml)
-
-```yaml
-environment:
-  num_md: 7          # 移动设备数量
-  num_es: 3          # 边缘服务器数量
-  num_slots: 10      # 每episode时隙数
-  slot_duration: 1.0 # 时隙长度(秒)
-  deadline: 1.0      # 任务截止时间
-  eta: 0.5           # 时间-能量权重
-  
-  # 设备CPU (Hz)
-  md_cpu: 1.0e9
-  es_cpus: [6.0e9, 12.0e9, 12.0e9]
-  
-  # 任务配置 (Mb)
-  task_sizes: [5.5, 5.0, 4.5, 4.0, 3.5, 3.0, 2.5]
-  task_variation: 0.05  # ±5%随机扰动
-  
-  # 传输
-  bandwidth: 10.0e6  # 10 Mbps
-  tx_power: 0.1      # 传输功率(W)
-```
-
-### 训练配置示例 (configs/3es7md_ippo.yaml)
-
-```yaml
-algorithm: IPPO
-hidden_dim: 128
-num_layers: 2
-lr: 5.0e-5
-lr_step: 5000      # LR衰减步数
-lr_gamma: 0.5      # LR衰减率
-
-training:
-  episodes: 20000
-  update_every: 500    # 累积500 episodes后更新
-  batch_size: 4096     # GPU大batch
-  num_epochs: 10
-  gamma: 0.99
-  gae_lambda: 0.95
-  clip_ratio: 0.2
-  entropy_coeff: 0.01
-  
-action_masking: true   # 启用动作掩码
-```
-
-## 🐛 已修复的关键Bug
-
-1. **任务一致性**: `_get_obs()`和`step()`生成不同任务大小 → 添加`self._slot_tasks`缓存
-2. **L1OutEstimator公式**: `log(avg(logs))` → `avg(logs) - log(B)`
-3. **InfoNCE负采样**: 可能包含正样本 → 排除自身索引
-4. **等待时间计算**: 只计算lower-index设备 → 计算所有同ES设备
-5. **HyperNetwork Value Head缺失**: `value=0` → 添加`value_head`模块
-6. **HyperNetwork更新频率过高**: 每episode更新 → 每10 episodes累积更新
-
-## 📁 项目结构（清理后）
-
-```
-.
-├── agents/                     # 智能体实现
-│   ├── ippo_agent.py           # IPPO算法
-│   ├── explaboff_agent.py      # ExplabOff (MI增强)
-│   ├── hypernetwork.py         # Cross-Scale HyperNetwork
-│   ├── hypernetwork_variants.py # HyperNetwork变体（消融实验）
-│   ├── mbmerl_agent.py         # 基于模型的元学习
-│   └── networks/               # 神经网络组件
-│       ├── actor_critic.py     # Actor-Critic网络
-│       └── mi_estimator.py     # MI估计器
-├── envs/                       # 环境实现
-│   ├── paper_accurate_env_v3.py  # 主环境 (支持多配置)
-│   └── vectorized_env.py       # 并行环境包装器
-├── trainers/                   # 训练脚本
-│   └── [训练脚本]
-├── evaluation/                 # 评估工具
-├── utils/                      # 工具函数
-├── configs/                    # 配置文件
-├── docs/                       # 文档
-├── results/                    # 实验结果
-├── README.md                   # 本文件
-├── requirements.txt            # 依赖
-├── PROJECT_PLAN.md             # 项目计划
-├── FINAL_REPORT.md             # 最终报告
-├── FINAL_SUMMARY.md            # 摘要
-├── multi_env_benchmark.py      # 多环境benchmark
-├── test_pettingzoo_api.py      # PettingZoo API测试
-├── train_3es7md_full.py        # 完整训练脚本（含checkpoint）
-├── train_hypernetwork.py       # HyperNetwork训练
-├── train_hypernetwork_fixed.py # HyperNetwork修复版训练
-├── train_hypernetwork_ablation.py # HyperNetwork消融实验
-└── validate_pipeline.py        # 端到端验证
-```
-
-**注意**: 已清理所有GNN实验文件、冗余训练脚本、测试文件和日志。项目聚焦于核心算法（IPPO/ExplabOff/HyperNetwork）和v3环境。
-
-## 📝 引用
-
-如果您使用本项目，请引用原始论文：
+## 引用
 
 ```bibtex
 @inproceedings{ren2025explaboff,
-  title={ExplabOff: Towards Explorative and Collaborative Task Offloading via Mutual Information-Enhanced MARL},
+  title={ExplabOff: Towards Explorative and Collaborative Task Offloading 
+         via Mutual Information-Enhanced MARL},
   author={Ren, Jinbo and others},
   booktitle={IEEE INFOCOM},
   year={2025}
 }
 ```
 
-## 📄 许可证
+## 许可证
 
-MIT License - 详见 [LICENSE](LICENSE) 文件
-
-## 🤝 贡献
-
-欢迎提交Issue和PR！主要改进方向：
-- PettingZoo API完整迁移（进行中）
-- Transformer-based Critic
-- 课程学习（简单→复杂环境）
-- 真实世界数据验证
-
-## 📧 联系方式
-
-项目地址: [github.com/Neko-Yukari/marlproject](https://github.com/Neko-Yukari/marlproject)
+MIT License
 
 ---
 
-**状态**: 论文复现完成 (Stage 1: 100%) | 优化探索完成 (Stage 2: 100%) | 新方法原型 (Stage 3: 50%) | 项目已清理，可提交
+**项目地址**: github.com/Neko-Yukari/marlproject

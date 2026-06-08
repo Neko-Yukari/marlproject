@@ -1,7 +1,7 @@
 """TDD tests for PettingZoo API - Pure Python (no pytest)."""
 import sys; sys.path.insert(0, '.')
 import traceback
-from envs.paper_accurate_env_v3 import PaperAccurateEnvV3
+from envs.paper_accurate_env import PaperAccurateEnvV3
 from pettingzoo import ParallelEnv
 
 # Test results storage

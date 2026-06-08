@@ -1,10 +1,16 @@
 """
-Unified Training Interface for MARL Edge Offloading.
+Unified Training Interface for MARL Edge Offloading - Orthogonal Architecture.
 
 Usage:
+    # Method 1: Full config file
     python train_unified.py --config configs/ippo_2es3md.yaml
-    python train_unified.py --config configs/explaboff_3es7md.yaml
-    python train_unified.py --config configs/hypernetwork.yaml
+    
+    # Method 2: Separated config (network + algorithm + env)
+    python train_unified.py --network standard --algorithm ippo --md 3 --es 2
+    python train_unified.py --network hyper --algorithm explaboff --md 5 --es 2
+    
+    # Method 3: Mixed (config file + overrides)
+    python train_unified.py --config configs/base.yaml --md 7 --es 3
 """
 import sys; sys.path.insert(0, '.')
 import argparse
@@ -17,11 +23,88 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Any, Union
 
-from envs.paper_accurate_env_v3 import PaperAccurateEnvV3
+from envs.paper_accurate_env import PaperAccurateEnvV3
+
+
+# Default configurations for separation
+DEFAULT_NETWORK_CONFIGS = {
+    'standard': {
+        'type': 'StandardPolicy',
+        'hidden_dim': 128,
+        'num_layers': 2,
+    },
+    'hyper': {
+        'type': 'HyperPolicy',
+        'hidden_dim': 256,
+        'num_layers': 3,
+        'max_obs_dim': 7,
+        'max_action_dim': 4,
+    },
+}
+
+DEFAULT_ALGORITHM_CONFIGS = {
+    'ippo': {
+        'name': 'ippo',
+        'use_mi': False,
+        'lr': 5e-5,
+        'gamma': 0.99,
+        'gae_lambda': 0.95,
+        'clip_ratio': 0.2,
+        'entropy_coeff': 0.01,
+        'value_coeff': 0.5,
+        'max_grad_norm': 0.5,
+        'update_every': 10,
+        'num_epochs': 4,
+        'batch_size': 64,
+    },
+    'explaboff': {
+        'name': 'explaboff',
+        'use_mi': True,
+        'mi_mu': 3.5,
+        'mi_nu': 1.0,
+        'mi_buffer_size': 1000,
+        'lr': 5e-5,
+        'gamma': 0.99,
+        'gae_lambda': 0.95,
+        'clip_ratio': 0.2,
+        'entropy_coeff': 0.01,
+        'value_coeff': 0.5,
+        'max_grad_norm': 0.5,
+        'update_every': 10,
+        'num_epochs': 4,
+        'batch_size': 64,
+    },
+}
+
+DEFAULT_ENV_CONFIG = {
+        'name': 'paper_accurate_env',
+    'slots': 10,
+    'randomize_profile': True,
+    'profile_noise': 0.05,
+}
+
+DEFAULT_TRAINING_CONFIG = {
+    'num_episodes': 1000,
+    'log_interval': 100,
+    'seed': 42,
+}
+
+DEFAULT_EVAL_CONFIG = {
+    'num_episodes': 100,
+    'log_interval': 100,
+}
+
+DEFAULT_CHECKPOINT_CONFIG = {
+    'save_interval': 1000,
+}
 
 
 class UnifiedTrainer:
-    """Unified trainer supporting multiple algorithms and configurations."""
+    """
+    Unified trainer supporting orthogonal combinations:
+    - Policy: StandardPolicy, HyperPolicy
+    - Algorithm: IPPO (no MI), ExplabOff (with MI)
+    """
     
     def __init__(self, config: Dict[str, Any]):
         self.config = config
@@ -53,213 +136,132 @@ class UnifiedTrainer:
         )
     
     def _create_agents(self) -> Dict[str, Any]:
-        """Create agents based on algorithm type."""
-        algo_type = self.algo_cfg['type']
+        """
+        Create agents using orthogonal architecture.
+        
+        Config structure:
+            algorithm:
+                type: PPO                          # Always PPO
+                network: StandardPolicy | HyperPolicy  # Which network
+                use_mi: true | false               # Whether to use MI reward
+                hidden_dim: 128
+                lr: 5e-5
+                # ... other hyperparameters
+        """
+        from agents.ppo_agent import PPOAgent
+        from agents.standard_policy import StandardPolicy
+        from agents.hyper_policy import HyperPolicy
+        from agents.mi_plugin import MIPlugin
+        
         M = self.env_cfg['num_md']
         E = self.env_cfg['num_es']
         obs_dim = self.env.obs_dim
         action_dim = E + 1
         
-        if algo_type == 'IPPO':
-            from agents.ippo_agent import IPPOAgent
-            return {
-                'type': 'IPPO',
-                'agents': [
-                    IPPOAgent(
-                        agent_id=i,
-                        state_dim=obs_dim,
-                        action_dim=action_dim,
-                        hidden_dim=self.algo_cfg.get('hidden_dim', 128),
-                        learning_rate=self.algo_cfg.get('lr', 5e-5),
-                        gamma=self.algo_cfg.get('gamma', 0.99),
-                        gae_lambda=self.algo_cfg.get('gae_lambda', 0.95),
-                        clip_ratio=self.algo_cfg.get('clip_ratio', 0.2),
-                        entropy_coeff=self.algo_cfg.get('entropy_coeff', 0.01),
-                        device=self.device
-                    )
-                    for i in range(M)
-                ]
-            }
+        # Get network type
+        network_type = self.algo_cfg.get('network', 'StandardPolicy')
+        use_mi = self.algo_cfg.get('use_mi', False)
         
-        elif algo_type == 'ExplabOff':
-            from agents.explaboff_agent import ExplabOffAgent
-            return {
-                'type': 'ExplabOff',
-                'agents': [
-                    ExplabOffAgent(
-                        agent_id=i,
-                        state_dim=obs_dim,
-                        action_dim=action_dim,
-                        hidden_dim=self.algo_cfg.get('hidden_dim', 128),
-                        lr=self.algo_cfg.get('lr', 5e-5),
-                        mi_mu=self.algo_cfg.get('mi_mu', 0.01),
-                        mi_nu=self.algo_cfg.get('mi_nu', 0.01),
-                        device=self.device
-                    )
-                    for i in range(M)
-                ]
-            }
+        # Create shared policy network
+        if network_type == 'StandardPolicy':
+            policy = StandardPolicy(
+                state_dim=obs_dim,
+                action_dim=action_dim,
+                hidden_dim=self.algo_cfg.get('hidden_dim', 128),
+                num_layers=self.algo_cfg.get('num_layers', 2)
+            ).to(self.device)
         
-        elif algo_type == 'HyperNetwork':
-            from agents.hypernetwork import HyperNetwork
-            from agents.hypernetwork_variants import CrossScaleAgent
-            
-            hyper_net = HyperNetwork(
-                obs_dim=self.algo_cfg.get('obs_dim', 7),
+        elif network_type == 'HyperPolicy':
+            policy = HyperPolicy(
+                max_obs_dim=self.algo_cfg.get('max_obs_dim', 7),
                 max_action_dim=self.algo_cfg.get('max_action_dim', 4),
                 hidden_dim=self.algo_cfg.get('hidden_dim', 256)
             ).to(self.device)
-            
-            return {
-                'type': 'HyperNetwork',
-                'network': hyper_net,
-                'agents': [
-                    CrossScaleAgent(
-                        agent_id=i,
-                        hyper_net=hyper_net,
-                        device=self.device,
-                        lr=self.algo_cfg.get('lr', 1e-6),
-                        update_interval=self.algo_cfg.get('update_interval', 10)
-                    )
-                    for i in range(M)
-                ]
-            }
-        
-        elif algo_type == 'Baseline':
-            return {
-                'type': 'Baseline',
-                'strategy': self.algo_cfg['strategy']
-            }
+            policy.set_config(M, E)
         
         else:
-            raise ValueError(f"Unknown algorithm type: {algo_type}")
+            raise ValueError(f"Unknown network type: {network_type}")
+        
+        # Create optional MI plugin
+        mi_plugin = None
+        if use_mi:
+            mi_plugin = MIPlugin(
+                state_dim=obs_dim,
+                action_dim=action_dim,
+                hidden_dim=self.algo_cfg.get('hidden_dim', 128),
+                mu=self.algo_cfg.get('mi_mu', 0.01),
+                nu=self.algo_cfg.get('mi_nu', 0.01),
+                device=self.device
+            )
+        
+        # Create agents (all share the same policy network if parameter sharing)
+        agent_list = []
+        for i in range(M):
+            agent = PPOAgent(
+                agent_id=i,
+                policy_network=policy,  # Inject policy!
+                mi_plugin=mi_plugin,     # Optional MI
+                learning_rate=float(self.algo_cfg.get('lr', 5e-5)),
+                gamma=float(self.algo_cfg.get('gamma', 0.99)),
+                gae_lambda=float(self.algo_cfg.get('gae_lambda', 0.95)),
+                clip_ratio=float(self.algo_cfg.get('clip_ratio', 0.2)),
+                entropy_coeff=float(self.algo_cfg.get('entropy_coeff', 0.01)),
+                value_coeff=float(self.algo_cfg.get('value_coeff', 0.5)),
+                max_grad_norm=float(self.algo_cfg.get('max_grad_norm', 0.5)),
+                device=self.device
+            )
+            agent_list.append(agent)
+        
+        return {
+            'type': 'PPO',
+            'network_type': network_type,
+            'use_mi': use_mi,
+            'agents': agent_list,
+            'policy': policy,
+            'mi_plugin': mi_plugin
+        }
     
     def _select_actions(self, obs: Dict[str, np.ndarray]) -> Dict[str, int]:
-        """Select actions for all agents."""
-        algo_type = self.agents['type']
+        """Select actions for all agents - unified!"""
         actions: Dict[str, int] = {}
         
-        if algo_type in ['IPPO', 'ExplabOff']:
-            agent_list = self.agents['agents']
-            for i, agent_id in enumerate(self.env.agents):
-                a, _, _ = agent_list[i].select_action(obs[agent_id])
-                actions[agent_id] = a
-        
-        elif algo_type == 'HyperNetwork':
-            agent_list = self.agents['agents']
-            M = self.env_cfg['num_md']
-            E = self.env_cfg['num_es']
-            for i, agent_id in enumerate(self.env.agents):
-                a = agent_list[i].select_action(obs[agent_id], M, E)
-                actions[agent_id] = a
-        
-        elif algo_type == 'Baseline':
-            strategy = self.agents['strategy']
-            task_sizes = self.env._current_means
-            es_cpus = self.env.es_cpu_list
-            
-            if strategy == 'Random':
-                actions_list = [np.random.randint(0, len(es_cpus) + 1) for _ in range(len(task_sizes))]
-            elif strategy == 'All_Local':
-                actions_list = [0] * len(task_sizes)
-            elif strategy == 'All_BestES':
-                actions_list = [len(es_cpus)] * len(task_sizes)
-            elif strategy == 'Greedy':
-                actions_list = self._greedy_actions(task_sizes, es_cpus)
-            elif strategy == 'Size_Based':
-                actions_list = self._size_based_actions(task_sizes, es_cpus)
-            else:
-                raise ValueError(f"Unknown baseline strategy: {strategy}")
-            
-            actions = {f"device_{i}": a for i, a in enumerate(actions_list)}
+        for i, agent_id in enumerate(self.env.agents):
+            agent = self.agents['agents'][i]
+            action, log_prob, value = agent.select_action(obs[agent_id])
+            actions[agent_id] = action
+            # Store value and log_prob for transition
+            agent._last_value = value
+            agent._last_log_prob = log_prob
         
         return actions
-    
-    def _greedy_actions(self, task_sizes, es_cpus):
-        """Greedy allocation."""
-        tx_rate = self.env.BANDWIDTH
-        cpu_cycles = self.env.CPU_CYCLES_PER_BIT
-        deadline = self.env.DEADLINE
-        
-        actions = []
-        es_time = [0.0] * len(es_cpus)
-        
-        for s in task_sizes:
-            best_time = float('inf')
-            best_action = 0
-            
-            # Check local
-            t_loc = s * 1e6 * cpu_cycles / self.env.MD_CPU
-            if t_loc <= deadline:
-                best_time = t_loc
-                best_action = 0
-            
-            # Check each ES
-            for es_idx, cpu in enumerate(es_cpus):
-                t_tx = s * 1e6 / tx_rate
-                t_exe = s * 1e6 * cpu_cycles / cpu
-                t_edge = t_tx + es_time[es_idx] + t_exe
-                if t_edge < best_time and t_edge <= deadline:
-                    best_time = t_edge
-                    best_action = es_idx + 1
-            
-            if best_action > 0:
-                es_time[best_action - 1] += s * 1e6 * cpu_cycles / es_cpus[best_action - 1]
-            
-            actions.append(best_action)
-        
-        return actions
-    
-    def _size_based_actions(self, task_sizes, es_cpus):
-        """Size-based allocation."""
-        sorted_idx = np.argsort(task_sizes)[::-1]
-        sorted_cpus = sorted([(c, i) for i, c in enumerate(es_cpus)], key=lambda x: x[0], reverse=True)
-        es_time = [0.0] * len(es_cpus)
-        tx_rate = self.env.BANDWIDTH
-        cpu_cycles = self.env.CPU_CYCLES_PER_BIT
-        
-        assignments = [0] * len(task_sizes)
-        for idx in sorted_idx:
-            s = task_sizes[idx]
-            best_time = float('inf')
-            best_es = 0
-            
-            for es_i, (cpu, _) in enumerate(sorted_cpus):
-                t_edge = s * 1e6 / tx_rate + es_time[es_i] + s * 1e6 * cpu_cycles / cpu
-                if t_edge < best_time:
-                    best_time = t_edge
-                    best_es = es_i
-            
-            es_time[best_es] += task_sizes[idx] * 1e6 * cpu_cycles / sorted_cpus[best_es][0]
-            assignments[idx] = best_es + 1
-        
-        return assignments
     
     def _store_transitions(self, obs, actions, rewards, dones):
-        """Store transitions for training."""
-        algo_type = self.agents['type']
-        
-        if algo_type in ['IPPO', 'ExplabOff']:
-            agent_list = self.agents['agents']
-            for i, agent_id in enumerate(self.env.agents):
-                agent = agent_list[i]
-                with torch.no_grad():
-                    state = torch.FloatTensor(obs[agent_id]).unsqueeze(0).to(self.device)
-                    _, value = agent.network(state)
-                    v = value.item()
-                agent.store_transition(obs[agent_id], actions[agent_id], rewards[agent_id], dones[agent_id], v, 0.0)
+        """Store transitions for all agents."""
+        for i, agent_id in enumerate(self.env.agents):
+            agent = self.agents['agents'][i]
+            
+            # Compute MI reward if plugin exists
+            mi_reward = agent.compute_mi_reward(obs[agent_id], actions[agent_id])
+            total_reward = rewards[agent_id] + mi_reward
+            
+            # Store transition
+            agent.store_transition(
+                obs[agent_id],
+                actions[agent_id],
+                total_reward,
+                agent._last_value,
+                agent._last_log_prob,
+                dones[agent_id]
+            )
     
     def _update_agents(self):
         """Update all agents."""
-        algo_type = self.agents['type']
-        
-        if algo_type in ['IPPO', 'ExplabOff']:
-            for agent in self.agents['agents']:
-                if len(agent.trajectory['states']) > 0:
-                    agent.update()
-        
-        elif algo_type == 'HyperNetwork':
-            pass
+        for agent in self.agents['agents']:
+            if len(agent.trajectory['states']) > 0:
+                agent.update(
+                    batch_size=self.train_cfg.get('batch_size', 64),
+                    num_epochs=self.train_cfg.get('num_epochs', 4)
+                )
     
     def train(self, num_episodes: int = 0):
         """Run training loop."""
@@ -268,8 +270,11 @@ class UnifiedTrainer:
         log_interval = self.train_cfg.get('log_interval', 1000)
         update_every = self.train_cfg.get('update_every', 500)
         
+        network_type = self.agents['network_type']
+        use_mi = self.agents['use_mi']
+        
         print(f"\n{'='*60}")
-        print(f"Training: {self.agents['type']}")
+        print(f"Training: PPO + {network_type} + {'MI' if use_mi else 'No MI'}")
         print(f"Config: {self.env_cfg['num_md']}MD-{self.env_cfg['num_es']}ES")
         print(f"Episodes: {num_episodes}")
         print(f"Device: {self.device}")
@@ -357,12 +362,13 @@ class UnifiedTrainer:
         with open(save_path / 'history.json', 'w') as f:
             json.dump(self.history, f, indent=2)
         
-        algo_type = self.agents['type']
-        if algo_type in ['IPPO', 'ExplabOff']:
-            for i, agent in enumerate(self.agents['agents']):
-                torch.save(agent.network.state_dict(), save_path / f'agent_{i}.pt')
-        elif algo_type == 'HyperNetwork':
-            torch.save(self.agents['network'].state_dict(), save_path / 'hypernetwork.pt')
+        # Save shared policy
+        policy = self.agents['policy']
+        torch.save(policy.state_dict(), save_path / 'policy.pt')
+        
+        # Save MI plugin if exists
+        if self.agents['mi_plugin'] is not None:
+            torch.save(self.agents['mi_plugin'].state_dict(), save_path / 'mi_plugin.pt')
         
         print(f"Saved to {save_path}")
     
@@ -370,27 +376,133 @@ class UnifiedTrainer:
         """Load model."""
         load_path = Path(path)
         
-        algo_type = self.agents['type']
-        if algo_type in ['IPPO', 'ExplabOff']:
-            for i, agent in enumerate(self.agents['agents']):
-                agent.network.load_state_dict(torch.load(load_path / f'agent_{i}.pt'))
-        elif algo_type == 'HyperNetwork':
-            self.agents['network'].load_state_dict(torch.load(load_path / 'hypernetwork.pt'))
+        policy = self.agents['policy']
+        policy.load_state_dict(torch.load(load_path / 'policy.pt', map_location=self.device))
+        
+        if self.agents['mi_plugin'] is not None:
+            self.agents['mi_plugin'].load_state_dict(
+                torch.load(load_path / 'mi_plugin.pt', map_location=self.device)
+            )
         
         print(f"Loaded from {load_path}")
 
 
+def build_config(args) -> Dict[str, Any]:
+    """Build config from separated command line arguments."""
+    config = {}
+    
+    # If config file provided, load it as base
+    if args.config:
+        with open(args.config, 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
+    
+    # Override or set network config
+    if args.network:
+        network_type = args.network.lower()
+        if network_type in DEFAULT_NETWORK_CONFIGS:
+            config['algorithm'] = config.get('algorithm', {})
+            config['algorithm']['network'] = DEFAULT_NETWORK_CONFIGS[network_type]['type']
+            for key, value in DEFAULT_NETWORK_CONFIGS[network_type].items():
+                if key != 'type':
+                    config['algorithm'][key] = value
+        else:
+            raise ValueError(f"Unknown network type: {args.network}. Choose from: {list(DEFAULT_NETWORK_CONFIGS.keys())}")
+    
+    # Override or set algorithm config
+    if args.algorithm:
+        algo_type = args.algorithm.lower()
+        if algo_type in DEFAULT_ALGORITHM_CONFIGS:
+            algo_config = DEFAULT_ALGORITHM_CONFIGS[algo_type]
+            config['algorithm'] = config.get('algorithm', {})
+            for key, value in algo_config.items():
+                config['algorithm'][key] = value
+        else:
+            raise ValueError(f"Unknown algorithm: {args.algorithm}. Choose from: {list(DEFAULT_ALGORITHM_CONFIGS.keys())}")
+    
+    # Override or set environment config
+    config['environment'] = config.get('environment', DEFAULT_ENV_CONFIG.copy())
+    if args.md is not None:
+        config['environment']['num_md'] = args.md
+    if args.es is not None:
+        config['environment']['num_es'] = args.es
+    
+    # Ensure num_md and num_es are set
+    if 'num_md' not in config['environment']:
+        config['environment']['num_md'] = 3  # default
+    if 'num_es' not in config['environment']:
+        config['environment']['num_es'] = 2  # default
+    
+    # Set training config
+    config['training'] = config.get('training', DEFAULT_TRAINING_CONFIG.copy())
+    if args.episodes:
+        config['training']['num_episodes'] = args.episodes
+    
+    # Set evaluation config
+    config['evaluation'] = config.get('evaluation', DEFAULT_EVAL_CONFIG.copy())
+    
+    # Set checkpoint config
+    config['checkpoint'] = config.get('checkpoint', DEFAULT_CHECKPOINT_CONFIG.copy())
+    
+    # Set device
+    config['device'] = args.device if args.device else ('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    # Set seed
+    config['seed'] = args.seed if args.seed is not None else config.get('seed', 42)
+    
+    # Set name for saving
+    network_name = args.network if args.network else config.get('network', 'standard')
+    algo_name = args.algorithm if args.algorithm else config.get('algorithm', {}).get('name', 'ippo')
+    md = config['environment']['num_md']
+    es = config['environment']['num_es']
+    config['name'] = f"{algo_name}_{network_name}_{md}md{es}es"
+    
+    return config
+
+
 def main():
-    parser = argparse.ArgumentParser(description='Unified MARL Training')
-    parser.add_argument('--config', type=str, required=True, help='Path to config YAML')
+    parser = argparse.ArgumentParser(description='Unified MARL Training - Orthogonal Architecture')
+    
+    # Config file (optional, for full config or base config)
+    parser.add_argument('--config', type=str, default=None, help='Path to base config YAML (optional)')
+    
+    # Separated configuration
+    parser.add_argument('--network', type=str, choices=['standard', 'hyper'], 
+                       help='Network architecture: standard or hyper')
+    parser.add_argument('--algorithm', type=str, choices=['ippo', 'explaboff'],
+                       help='Training algorithm: ippo or explaboff')
+    parser.add_argument('--md', type=int, help='Number of mobile devices')
+    parser.add_argument('--es', type=int, help='Number of edge servers')
+    
+    # Training parameters
+    parser.add_argument('--episodes', type=int, help='Number of training episodes')
+    parser.add_argument('--seed', type=int, help='Random seed')
+    parser.add_argument('--device', type=str, choices=['cpu', 'cuda'], help='Device to use')
+    
+    # Mode
     parser.add_argument('--mode', type=str, default='train', choices=['train', 'eval'], 
                        help='Train or evaluate')
     parser.add_argument('--save', type=str, default=None, help='Save directory')
     parser.add_argument('--load', type=str, default=None, help='Load directory')
+    
     args = parser.parse_args()
     
-    with open(args.config, 'r') as f:
-        config = yaml.safe_load(f)
+    # Validate: either config file or separated params must be provided
+    if not args.config and not (args.network and args.algorithm):
+        parser.error("Either --config or both --network and --algorithm must be provided")
+    
+    # Build config
+    config = build_config(args)
+    
+    print("="*60)
+    print("Unified MARL Training - Orthogonal Architecture")
+    print("="*60)
+    print(f"Network: {config['algorithm'].get('network', 'standard')}")
+    print(f"Algorithm: {config['algorithm']['name']}")
+    print(f"Environment: {config['environment']['num_md']}MD-{config['environment']['num_es']}ES")
+    print(f"Episodes: {config['training']['num_episodes']}")
+    print(f"Device: {config['device']}")
+    print(f"Seed: {config['seed']}")
+    print("="*60)
     
     trainer = UnifiedTrainer(config)
     
@@ -401,7 +513,10 @@ def main():
         history = trainer.train()
         
         results = trainer.evaluate()
-        print(f"\nEvaluation:")
+        print(f"\n{'='*60}")
+        print("Training Complete!")
+        print(f"{'='*60}")
+        print(f"Evaluation:")
         print(f"  Avg Cost: {results['avg_cost']:.4f} ± {results['std_cost']:.4f}")
         print(f"  Completion: {results['avg_completion']:.1%}")
         
