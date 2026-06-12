@@ -40,6 +40,14 @@ DEFAULT_NETWORK_CONFIGS = {
         'max_obs_dim': 7,
         'max_action_dim': 4,
     },
+    'gnn': {
+        'type': 'GNNPolicy',
+        'hidden_dim': 128,
+        'gnn_layers': 1,
+        'node_dim': 4,
+        'max_action_dim': 4,
+        'max_md': 10,
+    },
 }
 
 DEFAULT_ALGORITHM_CONFIGS = {
@@ -53,9 +61,9 @@ DEFAULT_ALGORITHM_CONFIGS = {
         'entropy_coeff': 0.01,
         'value_coeff': 0.5,
         'max_grad_norm': 0.5,
-        'update_every': 10,
+        'update_every': 100,
         'num_epochs': 4,
-        'batch_size': 64,
+        'batch_size': 128,
     },
     'explaboff': {
         'name': 'explaboff',
@@ -70,9 +78,9 @@ DEFAULT_ALGORITHM_CONFIGS = {
         'entropy_coeff': 0.01,
         'value_coeff': 0.5,
         'max_grad_norm': 0.5,
-        'update_every': 10,
+        'update_every': 100,
         'num_epochs': 4,
-        'batch_size': 64,
+        'batch_size': 128,
     },
 }
 
@@ -98,6 +106,13 @@ DEFAULT_CHECKPOINT_CONFIG = {
     'save_interval': 1000,
 }
 
+# Map user-friendly network names to PolicyNetwork class names
+NETWORK_TYPE_MAP = {
+    'standard': 'StandardPolicy',
+    'hyper': 'HyperPolicy',
+    'gnn': 'GNNPolicy',
+}
+
 
 class UnifiedTrainer:
     """
@@ -108,7 +123,8 @@ class UnifiedTrainer:
     
     def __init__(self, config: Dict[str, Any]):
         self.config = config
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        device_str = config.get('device', 'cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = torch.device(device_str)
         
         # Extract config sections
         self.env_cfg = config['environment']
@@ -179,6 +195,16 @@ class UnifiedTrainer:
             ).to(self.device)
             policy.set_config(M, E)
         
+        elif network_type == 'GNNPolicy':
+            from agents.gnn_policy import GNNPolicy
+            policy = GNNPolicy(
+                max_action_dim=self.algo_cfg.get('max_action_dim', 4),
+                hidden_dim=self.algo_cfg.get('hidden_dim', 128),
+                gnn_layers=self.algo_cfg.get('gnn_layers', 1),
+                node_dim=self.algo_cfg.get('node_dim', 4),
+                max_md=self.algo_cfg.get('max_md', 10)
+            ).to(self.device)
+        
         else:
             raise ValueError(f"Unknown network type: {network_type}")
         
@@ -225,13 +251,23 @@ class UnifiedTrainer:
         """Select actions for all agents - unified!"""
         actions: Dict[str, int] = {}
         
+        # If using GNN policy, build graph once per step
+        policy = self.agents['policy']
+        if hasattr(policy, 'set_graph'):
+            policy.set_graph(self.env)
+        
         for i, agent_id in enumerate(self.env.agents):
             agent = self.agents['agents'][i]
-            action, log_prob, value = agent.select_action(obs[agent_id])
+            action, log_prob, value = agent.select_action(obs[agent_id], agent_id=i)
             actions[agent_id] = action
             # Store value and log_prob for transition
             agent._last_value = value
             agent._last_log_prob = log_prob
+            # Store embedding for GNN policy
+            if hasattr(policy, 'get_embedding'):
+                embedding = policy.get_embedding(i)
+                if embedding is not None:
+                    agent._last_embedding = embedding.detach().cpu()
         
         return actions
     
@@ -244,6 +280,9 @@ class UnifiedTrainer:
             mi_reward = agent.compute_mi_reward(obs[agent_id], actions[agent_id])
             total_reward = rewards[agent_id] + mi_reward
             
+            # Get embedding if available (for GNN policy)
+            embedding = getattr(agent, '_last_embedding', None)
+            
             # Store transition
             agent.store_transition(
                 obs[agent_id],
@@ -251,7 +290,8 @@ class UnifiedTrainer:
                 total_reward,
                 agent._last_value,
                 agent._last_log_prob,
-                dones[agent_id]
+                dones[agent_id],
+                embedding=embedding
             )
     
     def _update_agents(self):
@@ -262,11 +302,12 @@ class UnifiedTrainer:
                     batch_size=self.train_cfg.get('batch_size', 64),
                     num_epochs=self.train_cfg.get('num_epochs', 4)
                 )
+                agent.clear_trajectory()
     
     def train(self, num_episodes: int = 0):
         """Run training loop."""
         if num_episodes <= 0:
-            num_episodes = self.train_cfg.get('episodes', 10000)
+            num_episodes = self.train_cfg.get('num_episodes', 10000)
         log_interval = self.train_cfg.get('log_interval', 1000)
         update_every = self.train_cfg.get('update_every', 500)
         
@@ -293,6 +334,11 @@ class UnifiedTrainer:
                 
                 dones = {a: terms[a] or truncs[a] for a in self.env.agents}
                 self._store_transitions(obs, actions, rewards, dones)
+                
+                # Clear GNN cache after storing transitions
+                policy = self.agents['policy']
+                if hasattr(policy, 'clear_cache'):
+                    policy.clear_cache()
                 
                 obs = next_obs
                 if all(dones.values()):
@@ -388,74 +434,92 @@ class UnifiedTrainer:
 
 
 def build_config(args) -> Dict[str, Any]:
-    """Build config from separated command line arguments."""
+    """Build config: YAML-first with CLI override capability.
+
+    Priority: YAML file > CLI args > Python defaults
+    """
     config = {}
-    
-    # If config file provided, load it as base
+
+    # Step 1: Load YAML if provided (primary configuration source)
     if args.config:
         with open(args.config, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
-    
-    # Override or set network config
-    if args.network:
-        network_type = args.network.lower()
-        if network_type in DEFAULT_NETWORK_CONFIGS:
-            config['algorithm'] = config.get('algorithm', {})
-            config['algorithm']['network'] = DEFAULT_NETWORK_CONFIGS[network_type]['type']
-            for key, value in DEFAULT_NETWORK_CONFIGS[network_type].items():
+    else:
+        # Step 2: No YAML → build from CLI + Python defaults
+        # Network
+        if args.network:
+            network_type = args.network.lower()
+            net_defaults = DEFAULT_NETWORK_CONFIGS[network_type]
+            config.setdefault('algorithm', {})['network'] = NETWORK_TYPE_MAP[network_type]
+            for key, value in net_defaults.items():
                 if key != 'type':
-                    config['algorithm'][key] = value
-        else:
-            raise ValueError(f"Unknown network type: {args.network}. Choose from: {list(DEFAULT_NETWORK_CONFIGS.keys())}")
-    
-    # Override or set algorithm config
-    if args.algorithm:
-        algo_type = args.algorithm.lower()
-        if algo_type in DEFAULT_ALGORITHM_CONFIGS:
-            algo_config = DEFAULT_ALGORITHM_CONFIGS[algo_type]
-            config['algorithm'] = config.get('algorithm', {})
-            for key, value in algo_config.items():
-                config['algorithm'][key] = value
-        else:
-            raise ValueError(f"Unknown algorithm: {args.algorithm}. Choose from: {list(DEFAULT_ALGORITHM_CONFIGS.keys())}")
-    
-    # Override or set environment config
-    config['environment'] = config.get('environment', DEFAULT_ENV_CONFIG.copy())
+                    config['algorithm'].setdefault(key, value)
+
+        # Algorithm
+        if args.algorithm:
+            algo_defaults = DEFAULT_ALGORITHM_CONFIGS[args.algorithm.lower()]
+            config.setdefault('algorithm', {})
+            for key, value in algo_defaults.items():
+                config['algorithm'].setdefault(key, value)
+
+        # Environment
+        config.setdefault('environment', DEFAULT_ENV_CONFIG.copy())
+        if args.md is not None:
+            config['environment']['num_md'] = args.md
+        if args.es is not None:
+            config['environment']['num_es'] = args.es
+
+        # Training
+        config.setdefault('training', DEFAULT_TRAINING_CONFIG.copy())
+
+    # Step 3: CLI overrides always win (regardless of YAML or CLI mode)
+    if args.network and not args.config:
+        pass  # already handled above
+    if args.algorithm and not args.config:
+        pass  # already handled above
     if args.md is not None:
-        config['environment']['num_md'] = args.md
+        config.setdefault('environment', {})['num_md'] = args.md
     if args.es is not None:
-        config['environment']['num_es'] = args.es
-    
-    # Ensure num_md and num_es are set
-    if 'num_md' not in config['environment']:
-        config['environment']['num_md'] = 3  # default
-    if 'num_es' not in config['environment']:
-        config['environment']['num_es'] = 2  # default
-    
-    # Set training config
-    config['training'] = config.get('training', DEFAULT_TRAINING_CONFIG.copy())
+        config.setdefault('environment', {})['num_es'] = args.es
     if args.episodes:
-        config['training']['num_episodes'] = args.episodes
-    
-    # Set evaluation config
-    config['evaluation'] = config.get('evaluation', DEFAULT_EVAL_CONFIG.copy())
-    
-    # Set checkpoint config
-    config['checkpoint'] = config.get('checkpoint', DEFAULT_CHECKPOINT_CONFIG.copy())
-    
-    # Set device
-    config['device'] = args.device if args.device else ('cuda' if torch.cuda.is_available() else 'cpu')
-    
-    # Set seed
+        config.setdefault('training', {})['num_episodes'] = args.episodes
+
+    # Ensure required fields
+    config.setdefault('environment', {}).setdefault('num_md', 3)
+    config['environment'].setdefault('num_es', 2)
+    config.setdefault('training', {}).setdefault('num_episodes', 10000)
+    config.setdefault('training', {}).setdefault('log_interval', 100)
+    config.setdefault('evaluation', DEFAULT_EVAL_CONFIG.copy())
+    config.setdefault('checkpoint', DEFAULT_CHECKPOINT_CONFIG.copy())
+
+    # Device and seed
+    config['device'] = args.device if args.device else config.get('device', 'cuda' if torch.cuda.is_available() else 'cpu')
     config['seed'] = args.seed if args.seed is not None else config.get('seed', 42)
-    
-    # Set name for saving
-    network_name = args.network if args.network else config.get('network', 'standard')
-    algo_name = args.algorithm if args.algorithm else config.get('algorithm', {}).get('name', 'ippo')
-    md = config['environment']['num_md']
-    es = config['environment']['num_es']
-    config['name'] = f"{algo_name}_{network_name}_{md}md{es}es"
-    
+
+    # Merge top-level network section into algorithm (YAML compatibility)
+    # MUST happen before name generation
+    if 'network' in config and isinstance(config['network'], dict):
+        net_cfg = config.pop('network')
+        config.setdefault('algorithm', {})
+        if 'type' in net_cfg:
+            net_type = net_cfg.pop('type')
+            net_cfg['network'] = NETWORK_TYPE_MAP.get(net_type, net_type)
+        config['algorithm'].update(net_cfg)
+
+    # Map friendly network names to class names (safety net)
+    if 'algorithm' in config and 'network' in config['algorithm']:
+        raw = config['algorithm']['network']
+        config['algorithm']['network'] = NETWORK_TYPE_MAP.get(raw, raw)
+
+    # Auto-generate name if not in YAML
+    if 'name' not in config:
+        net_key = args.network or config.get('algorithm', {}).get('network', 'standard')
+        net_name = net_key.lower().replace('policy', '')
+        algo_name = args.algorithm or config.get('algorithm', {}).get('name', 'ippo')
+        md = config['environment']['num_md']
+        es = config['environment']['num_es']
+        config['name'] = f'{algo_name}_{net_name}_{md}md{es}es'
+
     return config
 
 
@@ -466,8 +530,8 @@ def main():
     parser.add_argument('--config', type=str, default=None, help='Path to base config YAML (optional)')
     
     # Separated configuration
-    parser.add_argument('--network', type=str, choices=['standard', 'hyper'], 
-                       help='Network architecture: standard or hyper')
+    parser.add_argument('--network', type=str, choices=['standard', 'hyper', 'gnn'], 
+                       help='Network architecture: standard, hyper, or gnn')
     parser.add_argument('--algorithm', type=str, choices=['ippo', 'explaboff'],
                        help='Training algorithm: ippo or explaboff')
     parser.add_argument('--md', type=int, help='Number of mobile devices')
@@ -510,7 +574,7 @@ def main():
         trainer.load(args.load)
     
     if args.mode == 'train':
-        history = trainer.train()
+        history = trainer.train(num_episodes=config['training'].get('num_episodes', 10000))
         
         results = trainer.evaluate()
         print(f"\n{'='*60}")

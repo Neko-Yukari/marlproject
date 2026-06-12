@@ -62,15 +62,25 @@ class PPOAgent:
         # Trajectory buffer
         self.trajectory: Dict[str, List] = {
             "states": [], "actions": [], "rewards": [],
-            "values": [], "log_probs": [], "dones": []
+            "values": [], "log_probs": [], "dones": [],
+            "embeddings": []  # For GNN: cached node embeddings
         }
         
         # Episode reward tracking (for MI buffer classification)
         self._ep_reward_sum = 0.0
+        
+        # Temporary storage for value and log_prob (used by training loop)
+        self._last_value = 0.0
+        self._last_log_prob = 0.0
     
-    def select_action(self, state: np.ndarray, action_mask: Optional[np.ndarray] = None) -> Tuple[int, float, float]:
+    def select_action(self, state: np.ndarray, action_mask: Optional[np.ndarray] = None, agent_id: int = 0) -> Tuple[int, float, float]:
         """
         Select action using policy network.
+        
+        Args:
+            state: observation array
+            action_mask: optional action mask
+            agent_id: agent index for GNN cached embeddings
         
         Returns:
             action: int
@@ -84,7 +94,7 @@ class PPOAgent:
             if action_mask is not None:
                 mask = torch.from_numpy(action_mask).float().unsqueeze(0).to(self.device)
             
-            probs, value = self.policy(s, mask)
+            probs, value = self.policy(s, mask, agent_id=agent_id)
             
             # Handle case where all valid actions have prob 0
             if mask is not None and probs.sum() < 1e-6:
@@ -95,7 +105,7 @@ class PPOAgent:
             
             return action.item(), dist.log_prob(action).item(), value.item()
     
-    def store_transition(self, state, action, reward, value, log_prob, done):
+    def store_transition(self, state, action, reward, value, log_prob, done, embedding=None):
         """Store a transition in the trajectory buffer."""
         self.trajectory["states"].append(state)
         self.trajectory["actions"].append(action)
@@ -103,6 +113,8 @@ class PPOAgent:
         self.trajectory["values"].append(value)
         self.trajectory["log_probs"].append(log_prob)
         self.trajectory["dones"].append(done)
+        if embedding is not None:
+            self.trajectory["embeddings"].append(embedding)
         self._ep_reward_sum += reward
     
     def clear_trajectory(self):
@@ -162,6 +174,11 @@ class PPOAgent:
         d_t = torch.from_numpy(adv).float().to(self.device)
         r_t = torch.from_numpy(ret).float().to(self.device)
         
+        # Check if we have cached embeddings (for GNN)
+        has_embeddings = len(self.trajectory["embeddings"]) > 0
+        if has_embeddings:
+            emb_t = torch.stack(self.trajectory["embeddings"]).to(self.device)
+        
         losses = []
         n = len(states)
         
@@ -171,7 +188,11 @@ class PPOAgent:
                 idx = perm[i:i+batch_size]
                 
                 # Forward pass
-                probs, values = self.policy(s_t[idx])
+                if has_embeddings:
+                    # Use cached embeddings directly
+                    probs, values = self.policy.forward_from_embedding(emb_t[idx])
+                else:
+                    probs, values = self.policy(s_t[idx])
                 
                 # Handle NaN
                 if torch.isnan(probs).any():
