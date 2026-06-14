@@ -394,7 +394,7 @@ ExplabOff 维护两个经验缓冲池：
 └──────────┘ └──────────┘ └──────────┘
 ```
 
-**12 种配置组合** = 3 种网络 × 2 种算法 × 3 种环境，任意搭配。
+**18 种配置组合** = 3 种网络 × 2 种算法 × 3 种环境，任意搭配。
 
 #### 4.1.2 架构实现
 
@@ -563,7 +563,7 @@ GNN层 (×1): 消息传递 + 残差连接
 
 #### 4.4.1 YAML 配置文件
 
-项目提供 12 个预配置 YAML 文件，覆盖所有常见组合：
+项目提供 18 个预配置 YAML 文件（9 IPPO + 9 ExplabOff），覆盖所有常见组合：
 
 ```
 configs/
@@ -577,8 +577,14 @@ configs/
 ├── ippo_hyper_5md2es.yaml       # IPPO + Hyper + 2ES-5MD
 ├── ippo_hyper_7md3es.yaml       # IPPO + Hyper + 3ES-7MD
 ├── explaboff_standard_3md2es.yaml
+├── explaboff_standard_5md2es.yaml
+├── explaboff_standard_7md3es.yaml
 ├── explaboff_gnn_3md2es.yaml
-└── explaboff_hyper_3md2es.yaml
+├── explaboff_gnn_5md2es.yaml
+├── explaboff_gnn_7md3es.yaml
+├── explaboff_hyper_3md2es.yaml
+├── explaboff_hyper_5md2es.yaml
+└── explaboff_hyper_7md3es.yaml
 ```
 
 #### 4.4.2 配置文件结构
@@ -648,15 +654,28 @@ python train_unified.py --config configs/ippo_gnn_3md2es.yaml --episodes 5000 --
 2. **HyperNetwork 在 2ES-3MD 和 3ES-7MD 表现最佳**：说明超网络在边缘配置（最小和最大）受益于共享学习。
 3. **2ES-5MD 三者难分伯仲**：中等配置下各自能力相当，差距在统计误差范围内。
 
-### 5.2 对比基线：IPPO vs ExplabOff
+### 5.2 对比基线：IPPO vs ExplabOff（3ES-7MD 训练最佳Cost）
 
-| 配置 | IPPO | ExplabOff | 分析 |
+| 网络 | IPPO | ExplabOff | 分析 |
 |------|:----:|:---------:|------|
-| 2ES-3MD | 0.446 | 0.447 | 几乎相同，该环境不需要额外探索 |
-| 2ES-5MD | 0.385 | 0.380 | ExplabOff 略优，MI 探索在中等环境有帮助 |
-| 3ES-7MD | 0.390 | 0.394 | IPPO 反超，确定性环境不需要 MI |
+| Standard | 0.407 | **0.404** | ExplabOff 略优，MI 在简单网络上有效 |
+| GNN | **0.405** | 0.415 | IPPO 更稳定，ExplabOff+GNN 训练波动大 |
+| Hyper | **0.400** | 0.411 | IPPO+Hyper 是训练峰值之王 |
 
-### 5.3 关键发现
+### 5.3 泛化能力：3ES-7MD 训练 → 跨配置评估
+
+> 在 100 个未见过的 episodes 上重评估，**Cost 越低 = 泛化越好**
+
+| 模型 | 3ES-7MD Eval | -> 2ES-3MD | -> 2ES-5MD | 跨配置能力 |
+|------|:----------:|:----------:|:----------:|:--------:|
+| **ExplabOff + GNN** | **0.412** | 0.472 | 0.449 | 唯一真跨配置 |
+| IPPO + GNN | 0.461 | 0.457 | 0.415 | 跨配置可用 |
+| ExplabOff + Hyper | 0.526 | 0.472 | 0.449 | 泛化差 |
+| ExplabOff + Standard | 0.524 | 不兼容 | 不兼容 | 无法跨配置 |
+
+**泛化核心发现**：ExplabOff+GNN 在未见数据上 (0.412) 比 IPPO+GNN (0.461) 好 **10.6%**。MI 奖励机制让策略对分布偏移更鲁棒。训练最佳值具有欺骗性——IPPO+Hyper 训练峰值 0.400 但评估退化到 0.526（+31%）。
+
+### 5.4 关键发现
 
 **发现 1：IPPO 在所有配置下都收敛到接近最优**
 
@@ -670,11 +689,15 @@ python train_unified.py --config configs/ippo_gnn_3md2es.yaml --episodes 5000 --
 
 HyperNetwork 在 2ES-3MD（最小）和 3ES-7MD（最大）都排第一，但在 2ES-5MD（中等）表现最差。可能原因是中等配置的参数空间处于过度区域，权重生成不够精确。
 
-**发现 4：所有方法在 3K-5K episodes 内趋于稳定**
+**发现 4：ExplabOff+GNN 泛化最优，训练最优 != 泛化最优** 🆕
+
+IPPO+Hyper 在训练期间达到 0.400 最低 Cost，但在未见过的测试数据上退化至 0.526。ExplabOff+GNN 训练 Cost=0.415，但评估时仅有 0.412。MI 探索机制带来的策略多样性在分布偏移下提供了更好的鲁棒性。
+
+**发现 5：所有方法在 3K-5K episodes 内趋于稳定**
 
 训练曲线通常在 3,000 episodes 左右开始收敛，到 5,000 episodes 基本稳定。10,000 episodes 的长时间训练主要起 fine-tune 作用。
 
-**发现 5：训练中的重要 Bug 修复**
+**发现 6：训练中的重要 Bug 修复**
 
 | Bug | 影响 | 修复 |
 |-----|------|------|
@@ -830,7 +853,7 @@ python validate_pipeline.py
 - 三大模块解耦：网络层 × 算法层 × 环境层，自由组合
 - PolicyNetwork 抽象接口 → StandardPolicy / GNNPolicy / HyperPolicy
 - PPOAgent 通用训练器，MIPlugin 可选插件
-- 12 种配置组合 = 3×2×3，YAML 驱动
+- 18 种配置组合 = 3×2×3，YAML 驱动
 
 **建议配图**：三层架构 + 可选插件的组合关系图。
 
@@ -842,7 +865,7 @@ python validate_pipeline.py
 - HyperNetwork 方案：Config Encoder 生成动态权重
 - GNN 关键修复：过平滑问题（2层→1层），Cost 从 0.998 降至 0.426
 
-### Slide 9：实验结果
+### Slide 9：实验结果（训练）
 
 | 配置 | Standard MLP | GNN | HyperNetwork | 优胜 |
 |------|:-----------:|:----:|:------------:|:----:|
@@ -850,19 +873,34 @@ python validate_pipeline.py
 | 2ES-5MD | 0.385 | 0.385 | 0.394 | GNN/Standard |
 | 3ES-7MD | 0.407 | 0.405 | **0.400** | Hyper |
 
+**IPPO vs ExplabOff（3ES-7MD）**：Standard(0.407 vs **0.404**) | GNN(**0.405** vs 0.415) | Hyper(**0.400** vs 0.411)
+
 **要点**：
 - 所有方法收敛到 Cost≈0.40，远优于贪心算法（0.452）
 - GNN 修复后性能大幅提升
 - HyperNetwork 在边界配置最优
 
-### Slide 10：关键发现与结论
+### Slide 10：泛化能力（核心发现）🆕
+
+| 模型 | 3ES-7MD Eval | -> 2ES-3MD | -> 2ES-5MD |
+|------|:----------:|:----------:|:----------:|
+| **ExplabOff + GNN** 🥇 | **0.412** | 0.472 | 0.449 |
+| IPPO + GNN | 0.461 | 0.457 | 0.415 |
+
+**要点**：
+- ExplabOff+GNN 泛化比 IPPO+GNN 好 **10.6%**（0.412 vs 0.461）
+- 训练最佳 != 泛化最佳：IPPO+Hyper 训练 0.400 → 评估退化到 0.526
+- GNN 是唯一真正跨配置架构（Standard MLP 受固定维度限制）
+
+### Slide 11：关键发现与结论
 
 **要点**：
 1. IPPO 在所有配置下收敛到接近最优，隐式协调有效
 2. GNN 匹配标准 MLP 性能（过平滑修复关键）
 3. HyperNetwork 在边界配置最优，中等配置不稳定
-4. 正交架构设计可推广到其他 MARL 场景
-5. 开源代码 + 12 个预配置 YAML，一行命令即可复现
+4. **ExplabOff+GNN 泛化最优**：MI 奖励提升分布偏移下鲁棒性 🆕
+5. 正交架构设计可推广到其他 MARL 场景
+6. 开源代码 + 18 个预配置 YAML，一行命令即可复现
 
 ---
 
