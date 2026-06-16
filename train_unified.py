@@ -310,6 +310,9 @@ class UnifiedTrainer:
             num_episodes = self.train_cfg.get('num_episodes', 10000)
         log_interval = self.train_cfg.get('log_interval', 1000)
         update_every = self.train_cfg.get('update_every', 500)
+        checkpoint_cfg = self.config.get('checkpoint', {})
+        save_interval = checkpoint_cfg.get('save_interval', 1000)
+        save_dir = Path('results') / f"{self.config.get('name', 'model')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         
         network_type = self.agents['network_type']
         use_mi = self.agents['use_mi']
@@ -367,6 +370,15 @@ class UnifiedTrainer:
                 
                 if record['avg_cost'] < self.best_cost:
                     self.best_cost = record['avg_cost']
+                
+                # Save checkpoint periodically
+                if save_interval > 0 and ep > 0 and ep % save_interval == 0:
+                    ckpt_path = self.save_checkpoint(save_dir, ep)
+                    print(f"  Checkpoint saved: {ckpt_path}")
+        
+        # Save final checkpoint
+        if save_interval > 0:
+            self.save_checkpoint(save_dir, num_episodes)
         
         print(f"\nTraining complete. Best cost: {self.best_cost:.4f}")
         return self.history
@@ -417,6 +429,30 @@ class UnifiedTrainer:
             torch.save(self.agents['mi_plugin'].state_dict(), save_path / 'mi_plugin.pt')
         
         print(f"Saved to {save_path}")
+    
+    def save_checkpoint(self, path: Union[str, Path], episode: int):
+        """Save intermediate checkpoint."""
+        save_path = Path(path) / f'checkpoint_ep{episode}'
+        save_path.mkdir(parents=True, exist_ok=True)
+        
+        # Save policy state
+        policy = self.agents['policy']
+        torch.save(policy.state_dict(), save_path / 'policy.pt')
+        
+        # Save MI plugin if exists
+        if self.agents['mi_plugin'] is not None:
+            torch.save(self.agents['mi_plugin'].state_dict(), save_path / 'mi_plugin.pt')
+        
+        # Save training state
+        checkpoint_state = {
+            'episode': episode,
+            'best_cost': self.best_cost,
+            'history': self.history,
+        }
+        with open(save_path / 'checkpoint_state.json', 'w') as f:
+            json.dump(checkpoint_state, f, indent=2)
+        
+        return save_path
     
     def load(self, path: Union[str, Path]):
         """Load model."""
