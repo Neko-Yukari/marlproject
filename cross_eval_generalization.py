@@ -101,15 +101,13 @@ def create_policy(config: dict, device: torch.device):
     return policy, network_type, obs_dim, action_dim
 
 
-def evaluate_model(policy, mi_plugin, model_dir: Path, device: torch.device):
+def evaluate_model(policy, mi_plugin, network_type: str, train_obs_dim: int,
+                   train_action_dim: int, model_dir: Path, device: torch.device):
     """Evaluate a loaded model on all compatible test configs.
     
     Returns:
         dict: {test_config_name: {"cost": float, "std": float, "completion": float}}
     """
-    config = yaml.safe_load(open(model_dir / 'config.yaml'))
-    _, network_type, train_obs_dim, train_action_dim = create_policy(config, device)
-    
     results = {}
     
     for test_cfg in TEST_CONFIGS:
@@ -383,7 +381,7 @@ def main():
             mi_plugin.load_state_dict(torch.load(mi_path, map_location=device))
         
         # Evaluate on all compatible test configs
-        results = evaluate_model(policy, mi_plugin, model_dir, device)
+        results = evaluate_model(policy, mi_plugin, network_type, obs_dim, action_dim, model_dir, device)
         all_results[name] = results
     
     # Build and print matrix
