@@ -115,6 +115,23 @@ def collect_exp1_data():
             if hist and 'cost_history' in hist:
                 data['ExplabOff']['3ES-7MD'][net] = hist['cost_history']
     
+    # ExplabOff 2ES-3MD and 2ES-5MD from latest training (June 17)
+    net_prefix = {'Standard-MLP': 'standard', 'GNN': 'gnn', 'HyperNet': 'hyper'}
+    for net in ['Standard-MLP', 'GNN', 'HyperNet']:
+        for cfg in ['2ES-3MD', '2ES-5MD']:
+            parts = cfg.split('-')
+            es_num = parts[0].replace('ES', '')
+            md_num = parts[1].replace('MD', '')
+            pat = f'explaboff_{net_prefix[net]}_{md_num}md{es_num}es_*'
+            candidates = [p for p in RESULTS_DIR.glob(pat) if p.is_dir()]
+            candidates.sort(key=lambda p: p.name)
+            if candidates:
+                hist = load_history(candidates[-1])
+            if candidates:
+                hist = load_history(candidates[-1])
+                if hist and 'cost_history' in hist:
+                    data['ExplabOff'][cfg][net] = hist['cost_history']
+    
     return data
 
 
