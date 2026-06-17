@@ -267,7 +267,10 @@ class UnifiedTrainer:
             if hasattr(policy, 'get_embedding'):
                 embedding = policy.get_embedding(i)
                 if embedding is not None:
-                    agent._last_embedding = embedding.detach().cpu()
+                    if isinstance(embedding, tuple):
+                        agent._last_embedding = tuple(e.detach().cpu() for e in embedding)
+                    else:
+                        agent._last_embedding = embedding.detach().cpu()
         
         return actions
     

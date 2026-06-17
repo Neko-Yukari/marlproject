@@ -176,8 +176,22 @@ class PPOAgent:
         
         # Check if we have cached embeddings (for GNN)
         has_embeddings = len(self.trajectory["embeddings"]) > 0
+        emb_t = None
         if has_embeddings:
-            emb_t = torch.stack(self.trajectory["embeddings"]).to(self.device)
+            embeddings = self.trajectory["embeddings"]
+            # ES-aware GNN stores tuple (md_emb, es_embs)
+            if isinstance(embeddings[0], tuple):
+                md_embs = torch.stack([e[0] for e in embeddings]).to(self.device)
+                es_embs = torch.stack([e[1] for e in embeddings]).to(self.device)
+                emb_t = (md_embs, es_embs)
+            else:
+                emb_t = torch.stack(embeddings).to(self.device)
+        
+        def _index_embedding(embedding, idx):
+            """Index into either tensor embedding or tuple embedding."""
+            if isinstance(embedding, tuple):
+                return tuple(e[idx] for e in embedding)
+            return embedding[idx]
         
         losses = []
         n = len(states)
@@ -190,7 +204,8 @@ class PPOAgent:
                 # Forward pass
                 if has_embeddings:
                     # Use cached embeddings directly
-                    probs, values = self.policy.forward_from_embedding(emb_t[idx])
+                    sub_emb = _index_embedding(emb_t, idx)
+                    probs, values = self.policy.forward_from_embedding(sub_emb)
                 else:
                     probs, values = self.policy(s_t[idx])
                 
