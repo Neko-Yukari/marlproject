@@ -2,6 +2,10 @@ import json
 import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
+import torch
+
+from envs.paper_accurate_env import PaperAccurateEnvV3
+from greedy_baseline import greedy_baseline
 
 # Load ES-aware cross-config results
 with open('results/es_gnn_checkpoint_eval.json') as f:
@@ -25,11 +29,12 @@ native = {
     },
 }
 
-# Greedy handwritten baseline (just evaluated)
-greedy = {
-    '2ES-3MD': {'cost': 0.4205, 'comp': 0.983},
-    '2ES-5MD': {'cost': 0.3893, 'comp': 0.996},
-}
+# Greedy handwritten baseline - evaluate dynamically with fixed greedy_baseline.py
+greedy = {}
+for num_md, num_es, cfg_name in [(3, 2, '2ES-3MD'), (5, 2, '2ES-5MD')]:
+    env = PaperAccurateEnvV3(num_devices=num_md, num_servers=num_es, seed=10000)
+    cost_mean, cost_std, comp = greedy_baseline(env, seed=10000, episodes=100)
+    greedy[cfg_name] = {'cost': cost_mean, 'cost_std': cost_std, 'comp': comp}
 
 configs = ['2ES-3MD', '2ES-5MD']
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5.5))
@@ -38,19 +43,14 @@ x = np.arange(len(configs))
 width = 0.15
 
 # Cost plot
-# Greedy
 ax1.bar(x - 2*width, [greedy[c]['cost'] for c in configs], width,
         label='Greedy (handwritten)', color='#95A5A6', alpha=0.9)
-# Native IPPO+GNN
 ax1.bar(x - width, [native['IPPO+GNN'][c]['cost'] for c in configs], width,
         label='IPPO+GNN (native)', color='#FF6B6B', alpha=0.85)
-# Native ExplabOff+GNN
 ax1.bar(x, [native['ExplabOff+GNN'][c]['cost'] for c in configs], width,
         label='ExplabOff+GNN (native)', color='#4ECDC4', alpha=0.85)
-# Cross IPPO+GNN
 ax1.bar(x + width, [cross['IPPO+GNN'][c]['cost'] for c in configs], width,
         label='IPPO+GNN (3ES-7MD trained)', color='#C44569', alpha=0.85, hatch='//')
-# Cross ExplabOff+GNN
 ax1.bar(x + 2*width, [cross['ExplabOff+GNN'][c]['cost'] for c in configs], width,
         label='ExplabOff+GNN (3ES-7MD trained)', color='#006266', alpha=0.85, hatch='//')
 
@@ -87,7 +87,6 @@ out_dir.mkdir(exist_ok=True)
 plt.savefig(out_dir / 'exp3_cross_vs_native.png', dpi=300, bbox_inches='tight')
 print('Saved: results/ppt_experiments/exp3_cross_vs_native.png')
 
-# Print data table
 print('\nExperiment 3 data (with Greedy baseline):')
 print('| Method | Train | Test | Cost | Comp |')
 print('|--------|-------|------|------|------|')

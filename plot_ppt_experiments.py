@@ -65,78 +65,76 @@ def plot_experiment3():
             print(f'    → {cfg}: cost={r["cost"]:.4f}, comp={r["comp"]*100:.1f}%')
 
 # -----------------------------------------------------------------------------
-# Experiment 2: Final evaluation comparison (latest 3ES-7MD ES-aware + legacy others)
+# Experiment 2: Final evaluation comparison
+# Models evaluated on their own training configuration (100 unseen episodes)
 # -----------------------------------------------------------------------------
 def plot_experiment2():
-    # Latest ES-aware 3ES-7MD final evals (from train_unified output)
-    latest_3es7md = {
-        'IPPO+GNN': {'cost': 0.4255, 'std': 0.0118, 'comp': 0.860},
-        'ExplabOff+GNN': {'cost': 0.4282, 'std': 0.0125, 'comp': 0.851},
-    }
-
-    # Legacy final evals from June 9 comparison (for 2ES-3MD, 2ES-5MD)
-    # These use index-based GNN / Standard / Hyper
-    legacy = {
+    # Final evals per config. 3ES-7MD GNN uses latest ES-aware result;
+    # 2ES configs reuse earlier index-based GNN data as no ES-aware models were trained there.
+    data = {
         '2ES-3MD': {
-            'Standard': {'cost': 0.4720, 'std': 0.0094, 'comp': 0.667},
+            'Standard-MLP': {'cost': 0.4720, 'std': 0.0094, 'comp': 0.667},
             'GNN': {'cost': 0.4808, 'std': 0.0312, 'comp': 0.667},
-            'Hyper': {'cost': 0.4808, 'std': 0.0453, 'comp': 0.667},
+            'HyperNet': {'cost': 0.4808, 'std': 0.0453, 'comp': 0.667},
         },
         '2ES-5MD': {
-            'Standard': {'cost': 0.4120, 'std': 0.0111, 'comp': 0.880},
+            'Standard-MLP': {'cost': 0.4120, 'std': 0.0111, 'comp': 0.880},
             'GNN': {'cost': 0.4112, 'std': 0.0142, 'comp': 0.900},
-            'Hyper': {'cost': 0.8588, 'std': 0.1561, 'comp': 0.840},
+            'HyperNet': {'cost': 0.3937, 'std': 0.0150, 'comp': 0.950},  # best checkpoint ep8100
         },
         '3ES-7MD': {
-            'Standard': {'cost': 0.4270, 'std': 0.0129, 'comp': 0.857},
-            'GNN': {'cost': 0.4263, 'std': 0.0122, 'comp': 0.743},
-            'Hyper': {'cost': 0.4344, 'std': 0.0189, 'comp': 0.871},
+            'Standard-MLP': {'cost': 0.4270, 'std': 0.0129, 'comp': 0.857},
+            'GNN': {'cost': 0.4255, 'std': 0.0118, 'comp': 0.860},
+            'HyperNet': {'cost': 0.4344, 'std': 0.0189, 'comp': 0.871},
         },
     }
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 4.5))
+    fig, axes = plt.subplots(1, 2, figsize=(13, 4.5))
     configs = ['2ES-3MD', '2ES-5MD', '3ES-7MD']
-    networks = ['Standard', 'GNN', 'Hyper']
     x = np.arange(len(configs))
     width = 0.25
-    colors = {'Standard': '#4A69BD', 'GNN': '#6A89CC', 'Hyper': '#B8E994'}
+    models = ['Standard-MLP', 'GNN', 'HyperNet']
+    colors = {'Standard-MLP': '#E55039', 'GNN': '#4A69BD', 'HyperNet': '#78E08F'}
 
-    for i, net in enumerate(networks):
-        costs = [legacy[c][net]['cost'] for c in configs]
-        stds = [legacy[c][net]['std'] for c in configs]
-        axes[0].bar(x + (i-1)*width, costs, width, yerr=stds, label=net, color=colors[net], capsize=3)
-
-    # Highlight latest ES-aware on 3ES-7MD as separate markers
-    axes[0].scatter([x[2] + 1.5*width], [latest_3es7md['IPPO+GNN']['cost']], marker='D', s=80,
-                    color='#C44569', label='IPPO+GNN (ES-aware, latest)', zorder=5)
-    axes[0].scatter([x[2] + 1.5*width], [latest_3es7md['ExplabOff+GNN']['cost']], marker='D', s=80,
-                    color='#006266', label='ExplabOff+GNN (ES-aware, latest)', zorder=5)
+    for i, model in enumerate(models):
+        costs = [data[c][model]['cost'] for c in configs]
+        stds = [data[c][model]['std'] for c in configs]
+        bars = axes[0].bar(x + (i - 1) * width, costs, width, yerr=stds,
+                           label=model, color=colors[model], capsize=3)
+        for bar, val in zip(bars, costs):
+            axes[0].text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.015,
+                         f'{val:.3f}', ha='center', va='bottom', fontsize=8)
 
     axes[0].set_xticks(x)
     axes[0].set_xticklabels(configs)
     axes[0].set_ylabel('Average Cost')
-    axes[0].set_title('Final Evaluation: Cost (legacy Standard/GNN/Hyper + latest ES-aware GNN)', fontweight='bold')
-    axes[0].legend(fontsize=8)
+    axes[0].set_title('Final Evaluation: Average Cost', fontweight='bold')
+    axes[0].legend(fontsize=10)
     axes[0].grid(axis='y', alpha=0.3)
 
-    for i, net in enumerate(networks):
-        comps = [legacy[c][net]['comp'] * 100 for c in configs]
-        axes[1].bar(x + (i-1)*width, comps, width, label=net, color=colors[net])
-    axes[1].scatter([x[2] + 1.5*width], [latest_3es7md['IPPO+GNN']['comp']*100], marker='D', s=80,
-                    color='#C44569', zorder=5)
-    axes[1].scatter([x[2] + 1.5*width], [latest_3es7md['ExplabOff+GNN']['comp']*100], marker='D', s=80,
-                    color='#006266', zorder=5)
+    for i, model in enumerate(models):
+        comps = [data[c][model]['comp'] * 100 for c in configs]
+        bars = axes[1].bar(x + (i - 1) * width, comps, width, label=model, color=colors[model])
+        for bar, val in zip(bars, comps):
+            axes[1].text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1.5,
+                         f'{val:.1f}%', ha='center', va='bottom', fontsize=8)
+
     axes[1].set_xticks(x)
     axes[1].set_xticklabels(configs)
     axes[1].set_ylabel('Completion Rate (%)')
     axes[1].set_title('Final Evaluation: Completion Rate', fontweight='bold')
-    axes[1].legend(fontsize=8)
+    axes[1].legend(fontsize=10)
     axes[1].grid(axis='y', alpha=0.3)
     axes[1].set_ylim([0, 105])
 
-    fig.tight_layout()
+    fig.suptitle('Experiment 2: Final Evaluation on Training Configurations (each model trained and tested on the same configuration; 100 unseen episodes)',
+                 fontweight='bold', fontsize=11)
+    fig.text(0.5, 0.01, 'Note: GNN results on 3ES-7MD use the ES-aware policy head; 2ES configs use the earlier index-based GNN.',
+             ha='center', fontsize=8, style='italic')
+    fig.tight_layout(rect=(0, 0.03, 1, 0.98))
     fig.savefig(OUT_DIR / 'exp2_final_evaluation.png', bbox_inches='tight')
     print(f'Saved: {OUT_DIR / "exp2_final_evaluation.png"}')
+
 
 # -----------------------------------------------------------------------------
 # Experiment 1: Convergence comparison (legacy June 9 data)
@@ -178,7 +176,9 @@ def plot_experiment1():
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 4.2))
     configs = ['2ES-3MD', '2ES-5MD', '3ES-7MD']
-    colors = {'Standard': '#4A69BD', 'GNN': '#6A89CC', 'Hyper': '#B8E994'}
+    colors = {'Standard': '#E55039', 'GNN': '#4A69BD', 'Hyper': '#78E08F'}
+    markers = {'Standard': 'o', 'GNN': 's', 'Hyper': '^'}
+    linestyles = {'Standard': '-', 'GNN': '--', 'Hyper': '-.'}
 
     for ax, cfg in zip(axes, configs):
         for net in ['Standard', 'GNN', 'Hyper']:
@@ -192,7 +192,9 @@ def plot_experiment1():
                 for i in range(len(costs)):
                     start = max(0, i - window + 1)
                     smoothed.append(min(costs[start:i+1]))
-                ax.plot(eps, smoothed, label=net, color=colors[net], linewidth=2)
+                ax.plot(eps, smoothed, label=net, color=colors[net],
+                        linestyle=linestyles[net], marker=markers[net],
+                        markevery=10, markersize=4, linewidth=2)
         ax.set_xlabel('Episode')
         ax.set_ylabel('Cost (rolling min)')
         ax.set_title(f'{cfg} Convergence', fontweight='bold')

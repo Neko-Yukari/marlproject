@@ -11,17 +11,17 @@ def greedy_baseline(env, seed=10000, episodes=100):
     costs, completions = [], []
     for ep in range(episodes):
         obs, _ = env.reset(seed=seed + ep)
-        es_queue = [0] * env.E
         env_done = False
         while not env_done:
+            # Ensure env has generated tasks for this slot; use cached tasks
+            # that match what step() will actually execute.
             actions = {}
-            # Compute current tasks
-            tasks = {}
             for i, agent_id in enumerate(env.agents):
-                tasks[agent_id] = env._generate_task(i)
+                if agent_id not in env._slot_tasks:
+                    env._slot_tasks[agent_id] = env._generate_task(i)
             # Greedy action selection per MD
             for i, agent_id in enumerate(env.agents):
-                task = tasks[agent_id]
+                task = env._slot_tasks[agent_id]
                 best_action = 0
                 best_cost = float('inf')
                 # Local
@@ -37,7 +37,7 @@ def greedy_baseline(env, seed=10000, episodes=100):
                     t_tx = task['data_bits'] / rate
                     t_exe = task['cycles'] / es_cpu
                     # Greedy waiting estimate: tasks currently in queue * t_exe
-                    t_wait = es_queue[es_idx] * t_exe
+                    t_wait = env.es_queue_counts[es_idx] * t_exe
                     t_edge = t_tx + t_wait + t_exe
                     energy_tx = env.TX_POWER * t_tx
                     cost_edge = env.ETA * t_edge + (1 - env.ETA) * energy_tx
@@ -45,8 +45,6 @@ def greedy_baseline(env, seed=10000, episodes=100):
                         best_cost = cost_edge
                         best_action = es_idx + 1
                 actions[agent_id] = best_action
-                if best_action > 0:
-                    es_queue[best_action - 1] += 1
             obs, rewards, terminations, truncations, _ = env.step(actions)
             env_done = all(terminations.values()) or all(truncations.values())
         metrics = env.get_episode_metrics()
