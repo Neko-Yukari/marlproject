@@ -42,6 +42,11 @@ logs/
 .DS_Store
 Thumbs.db
 
+# PowerPoint files and lock files
+*.pptx
+~$*.pptx
+ppt_extract.txt
+
 # Temporary files
 tmp/
 temp/
