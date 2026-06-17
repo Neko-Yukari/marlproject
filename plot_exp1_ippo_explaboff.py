@@ -36,15 +36,23 @@ def load_comparison_json(network, config):
     return eps, costs
 
 
-def moving_min_safe(episodes, costs, window_eps=500):
-    """Minimum over trailing window_eps episodes."""
+def cumul_min(episodes, costs):
+    """Cumulative minimum — standard convergence curve in RL papers."""
     eps = np.asarray(episodes)
     vals = np.asarray(costs, dtype=float)
-    result = np.full(len(eps), np.nan)
-    for i in range(len(eps)):
-        start = np.searchsorted(eps, eps[i] - window_eps)
+    return eps, np.minimum.accumulate(vals)
+
+
+def smooth_explaboff(episodes, costs):
+    """ExplabOff has 101 data points — apply moving min for smoothness."""
+    ep = np.asarray(episodes)
+    vals = np.asarray(costs, dtype=float)
+    window = 500  # episode window
+    result = np.full(len(ep), np.nan)
+    for i in range(len(ep)):
+        start = np.searchsorted(ep, ep[i] - window)
         result[i] = vals[start:i+1].min()
-    return result
+    return ep, result
 
 
 def collect_exp1_data():
@@ -115,10 +123,14 @@ def plot_experiment1():
                 if curve is None or len(curve[0]) == 0:
                     continue
                 eps, costs = curve
-                smooth = moving_min_safe(eps, costs, window_eps=500)
+                # IPPO: sparse data → cumulative min. ExplabOff: dense → moving min.
+                if algo == 'IPPO' and len(eps) <= 22:
+                    ep_plot, vals_plot = cumul_min(eps, costs)
+                else:
+                    ep_plot, vals_plot = smooth_explaboff(eps, costs)
                 label = f'{algo}+{net}'
                 line, = ax.plot(
-                    eps, smooth,
+                    ep_plot, vals_plot,
                     color=colors[(algo, net)],
                     linestyle=linestyles[algo],
                     linewidth=1.6,
