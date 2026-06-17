@@ -55,6 +55,19 @@ def smooth_explaboff(episodes, costs):
     return ep, result
 
 
+def interpolate_to_dense(episodes, costs, target_eps=None, step=100):
+    """Interpolate sparse IPPO data to match ExplabOff density."""
+    from scipy.interpolate import interp1d
+    eps = np.asarray(episodes)
+    vals = np.asarray(costs, dtype=float)
+    if target_eps is None:
+        target_eps = int(eps[-1])
+    f = interp1d(eps, vals, kind='linear')
+    new_eps = np.arange(0, target_eps + 1, step)
+    new_vals = f(new_eps)
+    return new_eps, new_vals
+
+
 def collect_exp1_data():
     data = {}
     configs = ['2ES-3MD', '2ES-5MD', '3ES-7MD']
@@ -123,9 +136,12 @@ def plot_experiment1():
                 if curve is None or len(curve[0]) == 0:
                     continue
                 eps, costs = curve
-                # IPPO: sparse data → cumulative min. ExplabOff: dense → moving min.
+                # IPPO (21 pts): interpolate → cumulative min → moving min
+                # ExplabOff (101 pts): moving min directly
                 if algo == 'IPPO' and len(eps) <= 22:
-                    ep_plot, vals_plot = cumul_min(eps, costs)
+                    eps_dense, vals_dense = interpolate_to_dense(eps, costs)
+                    ep_plot, vals_plot = cumul_min(eps_dense, vals_dense)
+                    ep_plot, vals_plot = smooth_explaboff(ep_plot, vals_plot)
                 else:
                     ep_plot, vals_plot = smooth_explaboff(eps, costs)
                 label = f'{algo}+{net}'
